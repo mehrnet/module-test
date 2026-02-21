@@ -375,6 +375,33 @@
     return converted.amount.toFixed(5) + ' ' + esc(displayCode);
   }
 
+  function roundUpToDecimals(value, decimals) {
+    const n = Number(value);
+    if (Number.isNaN(n)) return 0;
+    const factor = Math.pow(10, Math.max(0, decimals));
+    if (n >= 0) {
+      return Math.ceil(n * factor) / factor;
+    }
+    return -Math.ceil(Math.abs(n) * factor) / factor;
+  }
+
+  function formatMonthlyPrice(v, currency) {
+    if (v === null || v === undefined || v === '') {
+      return '-';
+    }
+    const n = Number(v);
+    if (Number.isNaN(n)) {
+      return esc(v);
+    }
+    const marked = n * (1 + (cfg.priceMarkupPercent / 100));
+    const sourceCurrency = String(currency || 'EUR').trim().toUpperCase() || 'EUR';
+    const preferredCurrency = String(billingCurrencyCode || '').trim().toUpperCase();
+    const converted = convertCurrencyAmount(marked, sourceCurrency, preferredCurrency || sourceCurrency);
+    const roundedUp = roundUpToDecimals(converted.amount, 2);
+    const displayCode = converted.converted ? (preferredCurrency || sourceCurrency) : sourceCurrency;
+    return roundedUp.toFixed(2) + ' ' + esc(displayCode);
+  }
+
   function normalizeCurrencyCode(code) {
     const value = String(code || '').trim().toUpperCase();
     return /^[A-Z]{3}$/.test(value) ? value : '';
@@ -706,7 +733,7 @@
   }
 
   function formatEstimatePair(hourly, monthly, currency) {
-    return formatPrice(hourly, currency) + ' hourly / ' + formatPrice(monthly, currency) + ' monthly';
+    return formatPrice(hourly, currency) + ' hourly / ' + formatMonthlyPrice(monthly, currency) + ' monthly';
   }
 
   function setHintText(id, text) {
@@ -908,13 +935,13 @@
     if (row && (row.hourly_gross !== null || row.monthly_gross !== null)) {
       const pair = normalizeRatePair(row.hourly_gross, row.monthly_gross);
       if (pair.hourly !== null || pair.monthly !== null) {
-        hint.textContent = 'Estimated selected-location price: ' + formatPrice(pair.hourly, row.currency || type.price_currency) + ' hourly / ' + formatPrice(pair.monthly, row.currency || type.price_currency) + ' monthly';
+        hint.textContent = 'Estimated selected-location price: ' + formatPrice(pair.hourly, row.currency || type.price_currency) + ' hourly / ' + formatMonthlyPrice(pair.monthly, row.currency || type.price_currency) + ' monthly';
         return;
       }
     }
 
     const fromPair = normalizeRatePair(type.price_hourly_from, type.price_monthly_from);
-    hint.textContent = 'Estimated from-price: ' + formatPrice(fromPair.hourly, type.price_currency) + ' hourly / ' + formatPrice(fromPair.monthly, type.price_currency) + ' monthly';
+    hint.textContent = 'Estimated from-price: ' + formatPrice(fromPair.hourly, type.price_currency) + ' hourly / ' + formatMonthlyPrice(fromPair.monthly, type.price_currency) + ' monthly';
   }
 
   function renderOptionPricingHints() {
@@ -1070,7 +1097,7 @@
       addonsLine.textContent = addonParts.length ? ('Selected addons: ' + addonParts.join(' | ')) : 'Selected addons: none';
 
       totalLine.textContent = 'Estimated invoice now: ' + formatPrice(invoiceHoursTotal, infra.currency);
-      estimateLine.textContent = 'Hetzner infra estimate: ' + formatPrice(infra.hourly, infra.currency) + ' hourly / ' + formatPrice(infra.monthly, infra.currency) + ' monthly';
+      estimateLine.textContent = 'Hetzner infra estimate: ' + formatPrice(infra.hourly, infra.currency) + ' hourly / ' + formatMonthlyPrice(infra.monthly, infra.currency) + ' monthly';
       return;
     }
 
@@ -1107,7 +1134,7 @@
     totalLine.textContent = 'Estimated invoice now: ' + formatCurrencyAmount(invoiceNow);
 
     if (infra) {
-      estimateLine.textContent = 'Hetzner infra estimate: ' + formatPrice(infra.hourly, infra.currency) + ' hourly / ' + formatPrice(infra.monthly, infra.currency) + ' monthly';
+      estimateLine.textContent = 'Hetzner infra estimate: ' + formatPrice(infra.hourly, infra.currency) + ' hourly / ' + formatMonthlyPrice(infra.monthly, infra.currency) + ' monthly';
     } else {
       estimateLine.textContent = '';
     }
@@ -1340,8 +1367,8 @@
           ? formatPrice(exactPair.hourly, (exactRow && exactRow.currency) || type.price_currency)
           : ((fallbackPair.hourly !== null) ? ('from ' + formatPrice(fallbackPair.hourly, type.price_currency)) : '-');
         const monthlyText = (exactPair.monthly !== null)
-          ? formatPrice(exactPair.monthly, (exactRow && exactRow.currency) || type.price_currency)
-          : ((fallbackPair.monthly !== null) ? ('from ' + formatPrice(fallbackPair.monthly, type.price_currency)) : '-');
+          ? formatMonthlyPrice(exactPair.monthly, (exactRow && exactRow.currency) || type.price_currency)
+          : ((fallbackPair.monthly !== null) ? ('from ' + formatMonthlyPrice(fallbackPair.monthly, type.price_currency)) : '-');
         const trafficBytes = (exactRow && exactRow.included_traffic !== null)
           ? exactRow.included_traffic
           : (type.included_traffic !== null && type.included_traffic !== undefined ? type.included_traffic : null);
@@ -1480,7 +1507,7 @@
       const priceRow = findExactLocationPrice(((type && type.pricing ? type.pricing.location_prices : []) || []), name);
       const pair = priceRow ? normalizeRatePair(priceRow.hourly_gross, priceRow.monthly_gross) : { hourly: null, monthly: null };
       const priceText = (pair.hourly !== null || pair.monthly !== null)
-        ? (formatPrice(pair.hourly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' hourly / ' + formatPrice(pair.monthly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' monthly')
+        ? (formatPrice(pair.hourly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' hourly / ' + formatMonthlyPrice(pair.monthly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' monthly')
         : (isAvailable ? 'Pricing unavailable' : 'Unavailable for selected server');
       const isSelected = name === selectedName;
       const btnClass = isSelected
