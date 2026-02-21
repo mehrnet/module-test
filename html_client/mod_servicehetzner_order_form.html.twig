@@ -31,7 +31,7 @@
     <label class="form-label">{{ 'Location'|trans }}</label>
     {% if cfg.allow_location_choice|default('0') in ['1', 1, true] %}
       <input type="hidden" id="order_hetzner_location" name="location" value="{{ cfg.location|default('') }}">
-      <div id="order_hetzner_location_buttons" class="d-flex flex-wrap gap-2">
+      <div id="order_hetzner_location_buttons" class="order-hetzner-location-grid">
         <div class="small text-muted">{{ 'Loading locations...'|trans }}</div>
       </div>
       <small class="form-hint">{{ 'Inactive locations are not available for selected server type.'|trans }}</small>
@@ -120,7 +120,20 @@
 
   {% if product.pricing is defined %}
     <div class="col-12">
-      <label class="form-label">{{ 'Billing'|trans }}</label>
+      <div class="d-flex align-items-center gap-2 mb-1">
+        <label class="form-label mb-0">{{ 'Billing'|trans }}</label>
+        <button type="button" class="order-hetzner-info-toggle" id="order_hetzner_billing_info_toggle" aria-expanded="false" aria-controls="order_hetzner_billing_info_panel" title="{{ 'Pricing help'|trans }}">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"></circle>
+            <path d="M8 11.2V7.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+            <circle cx="8" cy="4.8" r="0.9" fill="currentColor"></circle>
+          </svg>
+          <span class="visually-hidden">{{ 'Toggle billing help'|trans }}</span>
+        </button>
+      </div>
+      <div id="order_hetzner_billing_info_panel" class="order-hetzner-info-panel d-none">
+        {{ 'Invoice section shows a simplified formula: hours × hourly rate. Expand details below invoice to see per-hour component rates (server, IPv4, IPv6, backups).'|trans }}
+      </div>
       {% if billing_mode == 'prepaid_hours' %}
         {% set default_hours = cfg.prepaid_hours_default|default('24') %}
         {% set min_hours = cfg.prepaid_hours_min|default('1') %}
@@ -129,7 +142,6 @@
           <div class="col-md-4">
             <label class="form-label">{{ 'Prepaid hours'|trans }}</label>
             <input class="form-control" type="number" min="{{ min_hours }}" max="{{ max_hours }}" step="1" id="order_hetzner_prepaid_hours" name="prepaid_hours" value="{{ default_hours }}">
-            <small class="form-hint">{{ 'Any partial usage is billed as a full hour. Use one-time product pricing where unit price equals one hour.'|trans }}</small>
           </div>
         </div>
         <input type="hidden" name="quantity" id="order_hetzner_quantity" value="{{ default_hours }}">
@@ -149,18 +161,14 @@
           <div class="form-control" readonly>{{ 0|money_convert }}</div>
         {% endif %}
       {% endif %}
-      {% if billing_mode == 'prepaid_hours' %}
-        <small class="form-hint">{{ 'Prepaid estimate is calculated as hours × (server + IPv4 + IPv6 + backups) using Hetzner catalog rates and configured markup.'|trans }}</small>
-      {% else %}
-        <small class="form-hint">{{ 'Order totals are calculated from your FossBilling product and addon prices.'|trans }}</small>
-      {% endif %}
     </div>
 
     <div class="col-12">
-      <div class="mt-2">
+      <div class="mt-2 order-hetzner-billing-summary">
         <div class="small text-muted" id="order_hetzner_billing_base_line"></div>
-        <div class="small text-muted" id="order_hetzner_billing_addons_line"></div>
         <div class="small fw-semibold" id="order_hetzner_billing_total_line"></div>
+        <hr class="my-2">
+        <div class="small text-muted" id="order_hetzner_billing_addons_line"></div>
         <div class="small text-muted" id="order_hetzner_billing_estimate_line"></div>
       </div>
     </div>
@@ -237,6 +245,49 @@
   }
   .order-hetzner-server-type-table-row .col-price {
     white-space: nowrap;
+  }
+  .order-hetzner-location-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.55rem;
+  }
+  .order-hetzner-location-btn {
+    width: 100%;
+    min-height: 74px;
+  }
+  .order-hetzner-info-toggle {
+    border: 1px solid var(--bs-border-color);
+    background: var(--bs-body-bg);
+    color: var(--bs-secondary-color);
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+  }
+  .order-hetzner-info-toggle:hover {
+    color: var(--bs-body-color);
+    border-color: var(--bs-secondary-color);
+  }
+  .order-hetzner-info-panel {
+    margin-bottom: 0.6rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.5rem;
+    background: var(--bs-tertiary-bg);
+    color: var(--bs-secondary-color);
+    font-size: 0.82rem;
+    line-height: 1.35;
+  }
+  .order-hetzner-billing-summary hr {
+    border-color: var(--bs-border-color);
+    opacity: 1;
+  }
+  .order-hetzner-billing-breakdown-line {
+    opacity: 0.78;
   }
   @media (max-width: 991.98px) {
     .order-hetzner-server-type-table-head {
@@ -400,6 +451,22 @@
     const roundedUp = roundUpToDecimals(converted.amount, 2);
     const displayCode = converted.converted ? (preferredCurrency || sourceCurrency) : sourceCurrency;
     return roundedUp.toFixed(2) + ' ' + esc(displayCode);
+  }
+
+  function formatHourlyOnlyPrice(v, currency) {
+    if (v === null || v === undefined || v === '') {
+      return '-';
+    }
+    const n = Number(v);
+    if (Number.isNaN(n)) {
+      return esc(v);
+    }
+    const marked = n * (1 + (cfg.priceMarkupPercent / 100));
+    const sourceCurrency = String(currency || 'EUR').trim().toUpperCase() || 'EUR';
+    const preferredCurrency = String(billingCurrencyCode || '').trim().toUpperCase();
+    const converted = convertCurrencyAmount(marked, sourceCurrency, preferredCurrency || sourceCurrency);
+    const displayCode = converted.converted ? (preferredCurrency || sourceCurrency) : sourceCurrency;
+    return converted.amount.toFixed(5) + ' ' + esc(displayCode) + ' / hour';
   }
 
   function normalizeCurrencyCode(code) {
@@ -1068,9 +1135,9 @@
       syncPrepaidHoursQuantity();
       const hours = getSelectedPrepaidHours();
       if (!infra) {
-        baseLine.textContent = 'Base product: select a server type to calculate hourly pricing.';
-        addonsLine.textContent = 'Selected addons: none';
-        totalLine.textContent = 'Estimated invoice now: -';
+        baseLine.textContent = 'Select a server type to calculate invoice.';
+        addonsLine.textContent = '';
+        totalLine.textContent = 'Invoice: -';
         estimateLine.textContent = '';
         return;
       }
@@ -1082,22 +1149,25 @@
       const backupsTotal = (Number(breakdown.backupsHourly) || 0) * hours;
       const invoiceHoursTotal = (Number(infra.hourly) || 0) * hours;
 
-      baseLine.textContent = 'Base server (' + hours + 'h): ' + formatPrice(serverTotal, infra.currency);
+      const formulaPrefix = hours + ' hours * ' + formatHourlyOnlyPrice(infra.hourly, infra.currency);
+      baseLine.textContent = formulaPrefix;
+      totalLine.textContent = 'Invoice: ' + formulaPrefix + ' = ' + formatPrice(invoiceHoursTotal, infra.currency);
 
-      const addonParts = [];
+      const detailLines = [];
+      detailLines.push('server = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.serverHourly, infra.currency) + ' = ' + formatPrice(serverTotal, infra.currency));
       if ((Number(breakdown.ipv4Hourly) || 0) > 0) {
-        addonParts.push('IPv4 (' + hours + 'h): ' + formatPrice(ipv4Total, infra.currency));
+        detailLines.push('ipv4 = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.ipv4Hourly, infra.currency) + ' = ' + formatPrice(ipv4Total, infra.currency));
       }
       if ((Number(breakdown.ipv6Hourly) || 0) > 0) {
-        addonParts.push('IPv6 (' + hours + 'h): ' + formatPrice(ipv6Total, infra.currency));
+        detailLines.push('ipv6 = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.ipv6Hourly, infra.currency) + ' = ' + formatPrice(ipv6Total, infra.currency));
       }
       if ((Number(breakdown.backupsHourly) || 0) > 0) {
-        addonParts.push('Backups (' + hours + 'h): ' + formatPrice(backupsTotal, infra.currency));
+        detailLines.push('backup = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.backupsHourly, infra.currency) + ' = ' + formatPrice(backupsTotal, infra.currency));
       }
-      addonsLine.textContent = addonParts.length ? ('Selected addons: ' + addonParts.join(' | ')) : 'Selected addons: none';
-
-      totalLine.textContent = 'Estimated invoice now: ' + formatPrice(invoiceHoursTotal, infra.currency);
-      estimateLine.textContent = 'Hetzner infra estimate: ' + formatPrice(infra.hourly, infra.currency) + ' hourly / ' + formatMonthlyPrice(infra.monthly, infra.currency) + ' monthly';
+      addonsLine.innerHTML = detailLines.map(function(line) {
+        return '<div class="order-hetzner-billing-breakdown-line">' + esc(line) + '</div>';
+      }).join('');
+      estimateLine.textContent = 'Monthly view: ' + formatMonthlyPrice(infra.monthly, infra.currency);
       return;
     }
 
@@ -1512,7 +1582,7 @@
         ? (isAvailable ? 'btn btn-primary text-start' : 'btn btn-secondary text-start')
         : (isAvailable ? 'btn btn-outline-secondary text-start' : 'btn btn-outline-secondary text-start disabled opacity-50');
       cards.push(
-        '<button type="button" class="' + btnClass + ' order-hetzner-location-btn" data-location="' + esc(name) + '" data-active="' + (isAvailable ? '1' : '0') + '" style="min-width: 220px;">'
+        '<button type="button" class="' + btnClass + ' order-hetzner-location-btn" data-location="' + esc(name) + '" data-active="' + (isAvailable ? '1' : '0') + '">'
           + '<div class="d-flex align-items-center gap-2">'
             + '<span class="d-inline-flex border rounded" style="overflow:hidden;line-height:0;" title="' + esc(countryCode || 'N/A') + '">' + flagSvg + '</span>'
             + '<div class="fw-semibold">' + esc(title) + (isAvailable ? '' : ' <span class="badge bg-secondary ms-1">Inactive</span>') + '</div>'
@@ -1721,6 +1791,16 @@
           syncPrepaidHoursQuantity();
           updateBillingSummary();
         });
+      });
+    }
+
+    const billingInfoToggle = document.getElementById('order_hetzner_billing_info_toggle');
+    const billingInfoPanel = document.getElementById('order_hetzner_billing_info_panel');
+    if (billingInfoToggle && billingInfoPanel) {
+      billingInfoToggle.addEventListener('click', function() {
+        const nextVisible = billingInfoPanel.classList.contains('d-none');
+        billingInfoPanel.classList.toggle('d-none', !nextVisible);
+        billingInfoToggle.setAttribute('aria-expanded', nextVisible ? 'true' : 'false');
       });
     }
 
