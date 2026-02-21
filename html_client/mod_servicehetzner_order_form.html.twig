@@ -161,6 +161,7 @@
     allowServerTypeChoice: {{ (cfg.allow_server_type_choice|default('0') in ['1', 1, true]) ? 'true' : 'false' }},
     allowLocationChoice: {{ (cfg.allow_location_choice|default('0') in ['1', 1, true]) ? 'true' : 'false' }},
     allowImageChoice: {{ (cfg.allow_image_choice|default('0') in ['1', 1, true]) ? 'true' : 'false' }},
+    projectRef: {{ (cfg.project_ref|default(''))|json_encode|raw }},
     serverType: {{ (cfg.server_type|default(''))|json_encode|raw }},
     location: {{ (cfg.location|default(''))|json_encode|raw }},
     image: {{ (cfg.image|default('ubuntu-24.04'))|json_encode|raw }},
@@ -303,6 +304,15 @@
   function getFlagSvg(countryCode) {
     const code = normalizeCountryCode(countryCode);
     return FLAG_SVGS[code] || DEFAULT_FLAG_SVG;
+  }
+
+  function normalizeArchitectureValue(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return '';
+    const compact = raw.replace(/[-_\s]/g, '');
+    if (compact.indexOf('arm') !== -1 || compact.indexOf('aarch64') !== -1) return 'arm64';
+    if (compact.indexOf('x86') !== -1 || compact.indexOf('amd64') !== -1 || compact.indexOf('intel64') !== -1) return 'x86_64';
+    return raw;
   }
 
   function parseIdList(value) {
@@ -876,17 +886,21 @@
     if (!el) return;
 
     const type = getSelectedType();
-    const typeArch = type && type.architecture ? String(type.architecture) : '';
+    const typeArch = normalizeArchitectureValue(type && type.architecture ? String(type.architecture) : '');
+    const allImages = Array.isArray(catalog.images) ? catalog.images : [];
+    const compatible = allImages.filter(function(image) {
+      const arch = normalizeArchitectureValue(String((image || {}).architecture || (image || {}).architecture_raw || ''));
+      if (!typeArch || !arch) return true;
+      return arch === typeArch;
+    });
+    const source = compatible.length ? compatible : allImages;
 
     const options = ['<option value="">Select image</option>'];
-    (catalog.images || []).forEach(function(image) {
-      const name = String(image.name || '');
+    source.forEach(function(image) {
+      const name = String((image || {}).name || '');
       if (!name) return;
-      const arch = String(image.architecture || '');
-      if (typeArch && arch && arch !== typeArch) return;
-
       const selected = cfg.image === name ? ' selected' : '';
-      options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(name + (image.description ? ' | ' + image.description : '')) + '</option>');
+      options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(name + ((image && image.description) ? ' | ' + image.description : '')) + '</option>');
     });
 
     el.innerHTML = options.join('');
@@ -922,7 +936,7 @@
   }
 
   function loadCatalog() {
-    API.guest.post('servicehetzner/catalog_get', { refresh: '1' }, function(result) {
+    API.guest.post('servicehetzner/catalog_get', { refresh: '1', project_ref: cfg.projectRef || '' }, function(result) {
       if (result && result.ok === false) {
         FOSSBilling.message(result.message || 'Failed to load Hetzner catalog', 'error');
         return;

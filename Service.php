@@ -752,7 +752,8 @@ class Service
                 'cores' => (int) ($type['cores'] ?? 0),
                 'memory' => (int) ($type['memory'] ?? 0),
                 'disk' => (int) ($type['disk'] ?? 0),
-                'architecture' => (string) ($type['architecture'] ?? ''),
+                'architecture' => $this->normalizeArchitectureValue($type['architecture'] ?? ''),
+                'architecture_raw' => (string) ($type['architecture'] ?? ''),
                 'deprecated' => (bool) ($type['deprecated'] ?? false),
                 'price_currency' => $pricing['currency'],
                 'price_hourly_from' => $pricing['from_hourly_gross'],
@@ -792,7 +793,8 @@ class Service
                 'status' => (string) ($image['status'] ?? ''),
                 'os_flavor' => (string) ($image['os_flavor'] ?? ''),
                 'os_version' => (string) ($image['os_version'] ?? ''),
-                'architecture' => (string) ($image['architecture'] ?? ''),
+                'architecture' => $this->normalizeArchitectureValue($image['architecture'] ?? ''),
+                'architecture_raw' => (string) ($image['architecture'] ?? ''),
                 'deprecated' => is_array($image['deprecated'] ?? null) ? $image['deprecated'] : ($image['deprecated'] ?? null),
                 'rapid_deploy' => (bool) ($image['rapid_deploy'] ?? false),
             ];
@@ -920,6 +922,16 @@ class Service
                         (array) ($existing['available_in_projects'] ?? []),
                         [$project['ref']]
                     )));
+
+                    $existing['pricing'] = $this->mergeServerTypePricing(
+                        is_array($existing['pricing'] ?? null) ? $existing['pricing'] : [],
+                        is_array($type['pricing'] ?? null) ? $type['pricing'] : []
+                    );
+                    if (!empty($existing['pricing']['currency'])) {
+                        $existing['price_currency'] = (string) $existing['pricing']['currency'];
+                    }
+                    $existing['price_hourly_from'] = $existing['pricing']['from_hourly_gross'] ?? ($existing['price_hourly_from'] ?? null);
+                    $existing['price_monthly_from'] = $existing['pricing']['from_monthly_gross'] ?? ($existing['price_monthly_from'] ?? null);
 
                     $existingHourly = isset($existing['price_hourly_from']) && is_numeric($existing['price_hourly_from']) ? (float) $existing['price_hourly_from'] : null;
                     $typeHourly = isset($type['price_hourly_from']) && is_numeric($type['price_hourly_from']) ? (float) $type['price_hourly_from'] : null;
@@ -2765,6 +2777,47 @@ class Service
         return $currency;
     }
 
+    private function extractLocationName($value): string
+    {
+        if (is_scalar($value)) {
+            return trim((string) $value);
+        }
+
+        if (!is_array($value)) {
+            return '';
+        }
+
+        foreach (['name', 'location', 'code'] as $key) {
+            if (!isset($value[$key]) || !is_scalar($value[$key])) {
+                continue;
+            }
+            $name = trim((string) $value[$key]);
+            if ($name !== '') {
+                return $name;
+            }
+        }
+
+        return '';
+    }
+
+    private function normalizeArchitectureValue($value): string
+    {
+        $raw = strtolower(trim((string) $value));
+        if ($raw === '') {
+            return '';
+        }
+
+        $compact = str_replace(['-', '_', ' '], '', $raw);
+        if (str_contains($compact, 'arm') || str_contains($compact, 'aarch64')) {
+            return 'arm64';
+        }
+        if (str_contains($compact, 'x86') || str_contains($compact, 'amd64') || str_contains($compact, 'intel64')) {
+            return 'x86_64';
+        }
+
+        return $raw;
+    }
+
     private function normalizePrimaryIpPricing(array $rows, string $type, string $fallbackCurrency): array
     {
         $fromHourly = null;
@@ -2800,7 +2853,7 @@ class Service
                 $fromMonthly = $monthlyGross;
             }
 
-            $location = trim((string) ($row['location'] ?? ''));
+            $location = $this->extractLocationName($row['location'] ?? '');
             if ($location === '') {
                 continue;
             }
@@ -2909,7 +2962,7 @@ class Service
             if (!is_array($row)) {
                 continue;
             }
-            $location = trim((string) ($row['location'] ?? ''));
+            $location = $this->extractLocationName($row['location'] ?? '');
             if ($location === '') {
                 continue;
             }
@@ -2928,7 +2981,7 @@ class Service
             if (!is_array($row)) {
                 continue;
             }
-            $location = trim((string) ($row['location'] ?? ''));
+            $location = $this->extractLocationName($row['location'] ?? '');
             if ($location === '') {
                 continue;
             }
@@ -3018,7 +3071,7 @@ class Service
             }
 
             $locationPrices[] = [
-                'location' => (string) ($row['location'] ?? ''),
+                'location' => $this->extractLocationName($row['location'] ?? ''),
                 'hourly_net' => is_array($hourly) && isset($hourly['net']) && is_numeric($hourly['net']) ? (float) $hourly['net'] : null,
                 'hourly_gross' => $hourlyGross,
                 'monthly_net' => is_array($monthly) && isset($monthly['net']) && is_numeric($monthly['net']) ? (float) $monthly['net'] : null,
@@ -3035,6 +3088,106 @@ class Service
         ];
     }
 
+    private function mergeServerTypePricing(array $base, array $incoming): array
+    {
+        $baseCurrency = trim((string) ($base['currency'] ?? ''));
+        $incomingCurrency = trim((string) ($incoming['currency'] ?? ''));
+        $currency = $baseCurrency !== '' ? $baseCurrency : ($incomingCurrency !== '' ? $incomingCurrency : 'EUR');
+
+        $baseFromHourly = isset($base['from_hourly_gross']) && is_numeric($base['from_hourly_gross']) ? (float) $base['from_hourly_gross'] : null;
+        $incomingFromHourly = isset($incoming['from_hourly_gross']) && is_numeric($incoming['from_hourly_gross']) ? (float) $incoming['from_hourly_gross'] : null;
+        $fromHourly = $baseFromHourly;
+        if ($fromHourly === null || ($incomingFromHourly !== null && $incomingFromHourly < $fromHourly)) {
+            $fromHourly = $incomingFromHourly;
+        }
+
+        $baseFromMonthly = isset($base['from_monthly_gross']) && is_numeric($base['from_monthly_gross']) ? (float) $base['from_monthly_gross'] : null;
+        $incomingFromMonthly = isset($incoming['from_monthly_gross']) && is_numeric($incoming['from_monthly_gross']) ? (float) $incoming['from_monthly_gross'] : null;
+        $fromMonthly = $baseFromMonthly;
+        if ($fromMonthly === null || ($incomingFromMonthly !== null && $incomingFromMonthly < $fromMonthly)) {
+            $fromMonthly = $incomingFromMonthly;
+        }
+
+        $mergedByLocation = [];
+        foreach ([(array) ($base['location_prices'] ?? []), (array) ($incoming['location_prices'] ?? [])] as $rows) {
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $location = $this->extractLocationName($row['location'] ?? '');
+                if ($location === '') {
+                    continue;
+                }
+
+                $hourlyGross = isset($row['hourly_gross']) && is_numeric($row['hourly_gross'])
+                    ? (float) $row['hourly_gross']
+                    : $this->extractPriceAmount($row['price_hourly'] ?? null);
+                $monthlyGross = isset($row['monthly_gross']) && is_numeric($row['monthly_gross'])
+                    ? (float) $row['monthly_gross']
+                    : $this->extractPriceAmount($row['price_monthly'] ?? null);
+                $hourlyNet = isset($row['hourly_net']) && is_numeric($row['hourly_net']) ? (float) $row['hourly_net'] : null;
+                $monthlyNet = isset($row['monthly_net']) && is_numeric($row['monthly_net']) ? (float) $row['monthly_net'] : null;
+                $rowCurrency = trim((string) ($row['currency'] ?? '')) ?: $currency;
+
+                if (!isset($mergedByLocation[$location])) {
+                    $mergedByLocation[$location] = [
+                        'location' => $location,
+                        'hourly_net' => $hourlyNet,
+                        'hourly_gross' => $hourlyGross,
+                        'monthly_net' => $monthlyNet,
+                        'monthly_gross' => $monthlyGross,
+                        'currency' => $rowCurrency,
+                    ];
+                } else {
+                    $existing = $mergedByLocation[$location];
+                    $existingHourly = isset($existing['hourly_gross']) && is_numeric($existing['hourly_gross']) ? (float) $existing['hourly_gross'] : null;
+                    $existingMonthly = isset($existing['monthly_gross']) && is_numeric($existing['monthly_gross']) ? (float) $existing['monthly_gross'] : null;
+                    $existingHourlyNet = isset($existing['hourly_net']) && is_numeric($existing['hourly_net']) ? (float) $existing['hourly_net'] : null;
+                    $existingMonthlyNet = isset($existing['monthly_net']) && is_numeric($existing['monthly_net']) ? (float) $existing['monthly_net'] : null;
+
+                    if ($hourlyGross !== null && ($existingHourly === null || $hourlyGross < $existingHourly)) {
+                        $existing['hourly_gross'] = $hourlyGross;
+                    }
+                    if ($monthlyGross !== null && ($existingMonthly === null || $monthlyGross < $existingMonthly)) {
+                        $existing['monthly_gross'] = $monthlyGross;
+                    }
+                    if ($hourlyNet !== null && ($existingHourlyNet === null || $hourlyNet < $existingHourlyNet)) {
+                        $existing['hourly_net'] = $hourlyNet;
+                    }
+                    if ($monthlyNet !== null && ($existingMonthlyNet === null || $monthlyNet < $existingMonthlyNet)) {
+                        $existing['monthly_net'] = $monthlyNet;
+                    }
+                    if ($rowCurrency !== '') {
+                        $existing['currency'] = $rowCurrency;
+                    }
+
+                    $mergedByLocation[$location] = $existing;
+                }
+            }
+        }
+
+        foreach ($mergedByLocation as $row) {
+            $hourly = isset($row['hourly_gross']) && is_numeric($row['hourly_gross']) ? (float) $row['hourly_gross'] : null;
+            $monthly = isset($row['monthly_gross']) && is_numeric($row['monthly_gross']) ? (float) $row['monthly_gross'] : null;
+            if ($hourly !== null && ($fromHourly === null || $hourly < $fromHourly)) {
+                $fromHourly = $hourly;
+            }
+            if ($monthly !== null && ($fromMonthly === null || $monthly < $fromMonthly)) {
+                $fromMonthly = $monthly;
+            }
+        }
+
+        ksort($mergedByLocation);
+
+        return [
+            'currency' => $currency,
+            'from_hourly_gross' => $fromHourly,
+            'from_monthly_gross' => $fromMonthly,
+            'location_prices' => array_values($mergedByLocation),
+        ];
+    }
+
     private function extractServerTypeAvailableLocations(array $type, array $pricing): array
     {
         $locations = [];
@@ -3043,17 +3196,24 @@ class Service
             if (!is_array($entry)) {
                 continue;
             }
-            $name = trim((string) ($entry['location'] ?? ''));
+            $name = $this->extractLocationName($entry['location'] ?? '');
             if ($name !== '') {
                 $locations[$name] = $name;
             }
         }
 
         foreach ((array) ($type['locations'] ?? []) as $row) {
+            if (is_scalar($row)) {
+                $name = trim((string) $row);
+                if ($name !== '') {
+                    $locations[$name] = $name;
+                }
+                continue;
+            }
             if (!is_array($row)) {
                 continue;
             }
-            $name = trim((string) ($row['name'] ?? ''));
+            $name = $this->extractLocationName($row['name'] ?? ($row['location'] ?? ''));
             if ($name === '') {
                 continue;
             }

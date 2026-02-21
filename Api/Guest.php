@@ -11,9 +11,13 @@ class Guest extends \Api_Abstract
     public function catalog_get($data): array
     {
         $refresh = (string) ($data['refresh'] ?? '0') === '1';
+        $projectRef = trim((string) ($data['project_ref'] ?? ''));
 
         try {
-            $catalog = $this->resolveService()->getGlobalCatalog($refresh);
+            $service = $this->resolveService();
+            $catalog = $projectRef !== ''
+                ? $service->getProjectCatalog($projectRef, $refresh)
+                : $service->getGlobalCatalog($refresh);
 
             return [
                 'ok' => true,
