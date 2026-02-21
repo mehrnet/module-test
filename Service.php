@@ -1307,22 +1307,29 @@ class Service
         ];
     }
 
-    public function onAfterAdminCronRun(\Box_Event $event): void
+    public static function onAfterAdminCronRun(\Box_Event $event): void
     {
         try {
-            $this->runHourlyBillingTick(true);
+            $service = self::resolveRuntimeServiceFromEvent($event);
+            if ($service instanceof self) {
+                $service->runHourlyBillingTick(true);
+            }
         } catch (\Throwable $e) {
             error_log('Servicehetzner hourly billing cron failed: ' . $e->getMessage());
         }
     }
 
-    public function onAfterAdminInvoicePaymentReceived(\Box_Event $event): bool
+    public static function onAfterAdminInvoicePaymentReceived(\Box_Event $event): bool
     {
         try {
+            $service = self::resolveRuntimeServiceFromEvent($event);
+            if (!$service instanceof self) {
+                return true;
+            }
             $params = $event->getParameters();
             $invoiceId = (int) ($params['id'] ?? 0);
             if ($invoiceId > 0) {
-                $this->applyPendingTopupsForInvoice($invoiceId);
+                $service->applyPendingTopupsForInvoice($invoiceId);
             }
         } catch (\Throwable $e) {
             error_log('Servicehetzner top-up application failed: ' . $e->getMessage());
@@ -1331,7 +1338,17 @@ class Service
         return true;
     }
 
-    public function onAfterProductAddedToCart(\Box_Event $event): void
+    public static function onAfterProductAddedToCart(\Box_Event $event): void
+    {
+        $service = self::resolveRuntimeServiceFromEvent($event);
+        if (!$service instanceof self) {
+            return;
+        }
+
+        $service->syncDynamicPricingAfterProductAddedToCart($event);
+    }
+
+    private function syncDynamicPricingAfterProductAddedToCart(\Box_Event $event): void
     {
         try {
             $params = $event->getParameters();
@@ -1428,6 +1445,31 @@ class Service
             }
         } catch (\Throwable $e) {
             error_log('Servicehetzner cart dynamic pricing sync failed: ' . $e->getMessage());
+        }
+    }
+
+    private static function resolveRuntimeServiceFromEvent(\Box_Event $event): ?self
+    {
+        try {
+            $di = $event->getDi();
+            if (!$di) {
+                return null;
+            }
+
+            $factory = $di['mod_service'] ?? null;
+            if (is_callable($factory)) {
+                $candidate = $factory('servicehetzner');
+                if ($candidate instanceof self) {
+                    return $candidate;
+                }
+            }
+
+            $service = new self();
+            $service->setDi($di);
+
+            return $service;
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 
