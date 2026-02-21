@@ -167,6 +167,101 @@
   {% endif %}
 </div>
 
+<style>
+  .order-hetzner-server-type-group-title {
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #6c757d;
+    margin-bottom: 0.45rem;
+  }
+  .order-hetzner-server-type-category-card {
+    border: 1px solid #dee2e6;
+    border-radius: 0.5rem;
+    background: #fff;
+    padding: 0.85rem;
+    min-height: 100%;
+  }
+  .order-hetzner-server-type-category-card.is-selected {
+    border-color: var(--bs-primary);
+    box-shadow: 0 0 0 0.15rem rgba(13, 110, 253, 0.15);
+  }
+  .order-hetzner-server-type-category-card .badge {
+    font-size: 0.68rem;
+  }
+  .order-hetzner-server-type-table-head,
+  .order-hetzner-server-type-table-row {
+    display: grid;
+    grid-template-columns: 1.2fr 0.7fr 0.7fr 0.8fr 0.8fr 1fr 1fr;
+    column-gap: 0.75rem;
+    align-items: center;
+  }
+  .order-hetzner-server-type-table-head {
+    border: 1px solid #dee2e6;
+    border-bottom: 0;
+    border-radius: 0.5rem 0.5rem 0 0;
+    background: #f8f9fa;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #6c757d;
+    padding: 0.55rem 0.7rem;
+  }
+  .order-hetzner-server-type-table-row {
+    width: 100%;
+    text-align: left;
+    border: 1px solid #dee2e6;
+    border-top: 0;
+    background: #fff;
+    padding: 0.65rem 0.7rem;
+  }
+  .order-hetzner-server-type-table-row:last-child {
+    border-radius: 0 0 0.5rem 0.5rem;
+  }
+  .order-hetzner-server-type-table-row.is-selected {
+    border-left: 3px solid var(--bs-primary);
+    background: rgba(13, 110, 253, 0.04);
+  }
+  .order-hetzner-server-type-table-row.is-inactive {
+    opacity: 0.58;
+    cursor: not-allowed;
+  }
+  .order-hetzner-server-type-table-row .col-name {
+    font-weight: 600;
+  }
+  .order-hetzner-server-type-table-row .col-price {
+    white-space: nowrap;
+  }
+  @media (max-width: 991.98px) {
+    .order-hetzner-server-type-table-head {
+      display: none;
+    }
+    .order-hetzner-server-type-table-row {
+      grid-template-columns: 1fr;
+      row-gap: 0.35rem;
+      border-top: 1px solid #dee2e6;
+      margin-top: 0.5rem;
+      border-radius: 0.5rem;
+    }
+    .order-hetzner-server-type-table-row .col-meta::before,
+    .order-hetzner-server-type-table-row .col-price::before {
+      display: inline-block;
+      min-width: 4.2rem;
+      font-size: 0.72rem;
+      color: #6c757d;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-right: 0.4rem;
+    }
+    .order-hetzner-server-type-table-row .col-cores::before { content: "vCPU"; }
+    .order-hetzner-server-type-table-row .col-memory::before { content: "RAM"; }
+    .order-hetzner-server-type-table-row .col-disk::before { content: "SSD"; }
+    .order-hetzner-server-type-table-row .col-traffic::before { content: "Traffic"; }
+    .order-hetzner-server-type-table-row .col-hourly::before { content: "Price/h"; }
+    .order-hetzner-server-type-table-row .col-monthly::before { content: "Price/mo"; }
+  }
+</style>
+
 <script>
 (function() {
   const cfg = {
@@ -246,6 +341,7 @@
   let catalog = { server_types: [], locations: [], images: [], firewalls: [], option_pricing: {} };
   let billingCurrencyCode = '';
   let selectedServerCategory = 'cost_optimized';
+  let selectedCategoryArchitecture = {};
 
   function esc(value) {
     return String(value || '')
@@ -266,6 +362,19 @@
     }
     const marked = n * (1 + (cfg.priceMarkupPercent / 100));
     return marked.toFixed(5) + ' ' + esc(currency || 'EUR');
+  }
+
+  function formatIncludedTraffic(value) {
+    const bytes = Number(value);
+    if (Number.isNaN(bytes) || bytes <= 0) {
+      return '-';
+    }
+    const tebibytes = bytes / (1024 * 1024 * 1024 * 1024);
+    if (tebibytes >= 1) {
+      return (tebibytes >= 10 ? tebibytes.toFixed(0) : tebibytes.toFixed(1)) + ' TB';
+    }
+    const gibibytes = bytes / (1024 * 1024 * 1024);
+    return gibibytes.toFixed(0) + ' GB';
   }
 
   function toNumberOrNull(value) {
@@ -342,12 +451,66 @@
 
   function getServerTypeCategoryMeta(key) {
     const map = {
-      cost_optimized: { title: 'Cost Optimized (x86 / Arm64)', order: 10 },
-      balanced: { title: 'Balanced', order: 20 },
-      dedicated_cpu: { title: 'Dedicated CPU', order: 30 },
-      other: { title: 'Other', order: 99 }
+      cost_optimized: {
+        title: 'Cost-Optimized',
+        group: 'shared_resources',
+        groupTitle: 'Shared Resources',
+        order: 10,
+        description: 'Cost-efficient shared vCPU plans for variable workloads.',
+        badges: ['Cost effective', 'Low CPU usage']
+      },
+      balanced: {
+        title: 'Regular Performance',
+        group: 'shared_resources',
+        groupTitle: 'Shared Resources',
+        order: 20,
+        description: 'Shared vCPU plans with stronger baseline performance.',
+        badges: ['Best price/performance', 'Low to medium CPU usage']
+      },
+      dedicated_cpu: {
+        title: 'General Purpose',
+        group: 'dedicated_resources',
+        groupTitle: 'Dedicated Resources',
+        order: 30,
+        description: 'Dedicated vCPU plans for consistent production workloads.',
+        badges: ['Predictable performance', 'Sustained CPU usage']
+      },
+      other: {
+        title: 'Other',
+        group: 'other',
+        groupTitle: 'Other',
+        order: 99,
+        description: 'Additional server families',
+        badges: []
+      }
     };
     return map[key] || map.other;
+  }
+
+  function getArchitectureLabel(arch) {
+    const normalized = normalizeArchitectureValue(arch);
+    if (normalized === 'x86_64') return 'x86 (Intel/AMD)';
+    if (normalized === 'arm64') return 'Arm64 (Ampere)';
+    return normalized || 'Mixed';
+  }
+
+  function sortArchitectures(values) {
+    const order = { x86_64: 10, arm64: 20 };
+    return values.slice().sort(function(a, b) {
+      const ra = a in order ? order[a] : 999;
+      const rb = b in order ? order[b] : 999;
+      if (ra !== rb) return ra - rb;
+      return String(a).localeCompare(String(b));
+    });
+  }
+
+  function collectCategoryArchitectures(types) {
+    const set = {};
+    (types || []).forEach(function(type) {
+      const arch = normalizeArchitectureValue((type || {}).architecture || (type || {}).architecture_raw || '');
+      if (arch) set[arch] = true;
+    });
+    return sortArchitectures(Object.keys(set));
   }
 
   function sortServerTypes(a, b) {
@@ -915,25 +1078,51 @@
       return;
     }
 
+    const current = String(input.value || cfg.serverType || '').trim();
     const currentType = types.find(function(type) {
-      return String(type.name || '') === String(input.value || cfg.serverType || '').trim();
-    });
-    if (currentType) {
-      selectedServerCategory = getServerTypeCategory(currentType.name, currentType.cpu_type || currentType.cpuType || '');
+      return String(type.name || '') === current;
+    }) || null;
+
+    if (categoryKeys.indexOf(selectedServerCategory) === -1) {
+      selectedServerCategory = currentType
+        ? getServerTypeCategory(currentType.name, currentType.cpu_type || currentType.cpuType || '')
+        : categoryKeys[0];
     }
 
     if (categoryKeys.indexOf(selectedServerCategory) === -1) {
       selectedServerCategory = categoryKeys[0];
     }
 
-    const current = String(input.value || cfg.serverType || '').trim();
-    const selectedCategoryTypes = grouped[selectedServerCategory] || [];
+    const selectedCategoryAllTypes = grouped[selectedServerCategory] || [];
+    const selectedCategoryArchitectures = collectCategoryArchitectures(selectedCategoryAllTypes);
+    let selectedArch = String(selectedCategoryArchitecture[selectedServerCategory] || '');
+    if (selectedCategoryArchitectures.length && selectedCategoryArchitectures.indexOf(selectedArch) === -1) {
+      selectedArch = selectedCategoryArchitectures[0];
+    }
+    if (!selectedCategoryArchitectures.length) {
+      selectedArch = '';
+    }
+    selectedCategoryArchitecture[selectedServerCategory] = selectedArch;
+
+    let selectedCategoryTypes = selectedCategoryAllTypes.slice();
+    if (selectedArch) {
+      selectedCategoryTypes = selectedCategoryTypes.filter(function(type) {
+        return normalizeArchitectureValue(type.architecture || type.architecture_raw || '') === selectedArch;
+      });
+    }
+    if (!selectedCategoryTypes.length) {
+      selectedCategoryTypes = selectedCategoryAllTypes.slice();
+    }
+
     const activeTypes = selectedCategoryTypes.filter(function(type) {
       return isServerAvailableInLocation(type, locationName);
     });
 
     let selectedName = '';
-    if (selectedCategoryTypes.some(function(type) { return String(type.name || '') === current; }) && activeTypes.some(function(type) { return String(type.name || '') === current; })) {
+    if (
+      selectedCategoryTypes.some(function(type) { return String(type.name || '') === current; })
+      && activeTypes.some(function(type) { return String(type.name || '') === current; })
+    ) {
       selectedName = current;
     } else if (activeTypes.length) {
       selectedName = String(activeTypes[0].name || '');
@@ -944,55 +1133,124 @@
     }
     input.value = selectedName;
 
-    const chunks = [];
-    chunks.push('<div class="d-flex flex-wrap gap-2 mb-2">');
+    const groupedBySection = {};
     categoryKeys.forEach(function(key) {
-      const meta = getServerTypeCategoryMeta(key);
-      const isActiveCategory = key === selectedServerCategory;
-      const catClass = isActiveCategory ? 'btn btn-primary btn-sm' : 'btn btn-outline-secondary btn-sm';
-      chunks.push('<button type="button" class="' + catClass + ' order-hetzner-server-category-btn" data-category="' + esc(key) + '">' + esc(meta.title) + '</button>');
+      const section = String((getServerTypeCategoryMeta(key) || {}).group || 'other');
+      if (!groupedBySection[section]) groupedBySection[section] = [];
+      groupedBySection[section].push(key);
     });
-    chunks.push('</div>');
-    chunks.push('<div class="small fw-semibold text-muted text-uppercase mt-1 mb-1">Available Servers For The Server Type</div>');
-    chunks.push('<div class="d-flex flex-wrap gap-2">');
 
-    selectedCategoryTypes.forEach(function(type) {
-      const name = String(type.name || '');
-      const isAvailable = isServerAvailableInLocation(type, locationName);
-      const isSelected = name === selectedName;
-      const btnClass = isSelected && isAvailable
-        ? 'btn btn-primary text-start'
-        : (isAvailable ? 'btn btn-outline-secondary text-start' : 'btn btn-outline-secondary text-start disabled opacity-50');
-      const arch = normalizeArchitectureValue(type.architecture || type.architecture_raw || '');
-      const archLabel = arch ? (' | ' + arch) : '';
+    const sectionOrder = ['shared_resources', 'dedicated_resources', 'other'];
+    const sectionTitles = {
+      shared_resources: 'Shared Resources',
+      dedicated_resources: 'Dedicated Resources',
+      other: 'Other'
+    };
 
-      let priceText = 'Pricing unavailable';
-      const exactRow = findExactLocationPrice(((type.pricing || {}).location_prices || []), locationName);
-      if (exactRow && (exactRow.hourly_gross !== null || exactRow.monthly_gross !== null)) {
-        const pair = normalizeRatePair(exactRow.hourly_gross, exactRow.monthly_gross);
-        priceText = formatPrice(pair.hourly, exactRow.currency || type.price_currency) + ' hourly / ' + formatPrice(pair.monthly, exactRow.currency || type.price_currency) + ' monthly';
-      } else {
-        const pair = normalizeRatePair(type.price_hourly_from, type.price_monthly_from);
-        if (pair.hourly !== null || pair.monthly !== null) {
-          priceText = 'from ' + formatPrice(pair.hourly, type.price_currency) + ' hourly / ' + formatPrice(pair.monthly, type.price_currency) + ' monthly';
+    const chunks = [];
+    sectionOrder.forEach(function(section) {
+      const keys = groupedBySection[section] || [];
+      if (!keys.length) return;
+
+      chunks.push('<div class="order-hetzner-server-type-group-title">' + esc(sectionTitles[section] || section) + '</div>');
+      chunks.push('<div class="row g-2 mb-2">');
+      keys.forEach(function(key) {
+        const meta = getServerTypeCategoryMeta(key);
+        const typesInCategory = grouped[key] || [];
+        const availableCount = typesInCategory.filter(function(type) {
+          return isServerAvailableInLocation(type, locationName);
+        }).length;
+        const isActiveCategory = key === selectedServerCategory;
+        const architectures = collectCategoryArchitectures(typesInCategory);
+        const archSelected = String(selectedCategoryArchitecture[key] || architectures[0] || '');
+        selectedCategoryArchitecture[key] = archSelected;
+
+        chunks.push('<div class="col-12 col-lg-4">');
+        chunks.push('<div class="order-hetzner-server-type-category-card' + (isActiveCategory ? ' is-selected' : '') + '">');
+        chunks.push(
+          '<button type="button" class="' + (isActiveCategory ? 'btn btn-primary' : 'btn btn-outline-secondary') + ' w-100 text-start order-hetzner-server-category-btn" data-category="' + esc(key) + '">'
+            + '<div class="fw-semibold">' + esc(meta.title || key) + '</div>'
+            + '<div class="small mt-1">' + esc(meta.description || '') + '</div>'
+          + '</button>'
+        );
+        if (availableCount < typesInCategory.length) {
+          chunks.push('<div class="mt-2"><span class="badge text-bg-warning">Limited availability</span></div>');
         }
-      }
-
-      chunks.push(
-        '<button type="button" class="' + btnClass + ' order-hetzner-server-type-btn" data-server-type="' + esc(name) + '" data-active="' + (isAvailable ? '1' : '0') + '" style="min-width: 260px;">'
-          + '<div class="fw-semibold">' + esc(name) + (isAvailable ? '' : ' <span class="badge bg-secondary ms-1">Inactive</span>') + '</div>'
-          + '<div class="small">' + esc((type.cores || 0) + ' vCPU | ' + (type.memory || 0) + ' GB RAM | ' + (type.disk || 0) + ' GB Disk' + archLabel) + '</div>'
-          + '<div class="small">' + esc(priceText) + '</div>'
-        + '</button>'
-      );
+        if (Array.isArray(meta.badges) && meta.badges.length) {
+          chunks.push('<div class="d-flex flex-wrap gap-1 mt-2">');
+          meta.badges.forEach(function(badge) {
+            chunks.push('<span class="badge text-bg-light border">' + esc(badge) + '</span>');
+          });
+          chunks.push('</div>');
+        }
+        if (architectures.length) {
+          chunks.push('<div class="small text-muted mt-2 mb-1">Architecture</div>');
+          chunks.push('<div class="d-flex flex-wrap gap-1">');
+          architectures.forEach(function(arch) {
+            const archClass = arch === archSelected ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-outline-secondary';
+            chunks.push(
+              '<button type="button" class="' + archClass + ' order-hetzner-server-architecture-btn" data-category="' + esc(key) + '" data-architecture="' + esc(arch) + '">' + esc(getArchitectureLabel(arch)) + '</button>'
+            );
+          });
+          chunks.push('</div>');
+        }
+        chunks.push('</div>');
+        chunks.push('</div>');
+      });
+      chunks.push('</div>');
     });
+
+    chunks.push('<div class="small fw-semibold text-muted text-uppercase mt-3 mb-1">Available Servers For The Server Type</div>');
+    chunks.push('<div class="order-hetzner-server-type-table-head">');
+    chunks.push('<div>Name</div><div>vCPUs</div><div>RAM</div><div>SSD</div><div>Traffic</div><div>Price / h</div><div>Price / mo</div>');
     chunks.push('</div>');
+
+    if (!selectedCategoryTypes.length) {
+      chunks.push('<div class="border rounded-bottom p-2 small text-muted">No server types available for this category.</div>');
+    } else {
+      selectedCategoryTypes.forEach(function(type) {
+        const name = String(type.name || '');
+        const isAvailable = isServerAvailableInLocation(type, locationName);
+        const isSelected = name === selectedName;
+        const arch = normalizeArchitectureValue(type.architecture || type.architecture_raw || '');
+        const exactRow = findExactLocationPrice(((type.pricing || {}).location_prices || []), locationName);
+        const fallbackPair = normalizeRatePair(type.price_hourly_from, type.price_monthly_from);
+        const exactPair = exactRow ? normalizeRatePair(exactRow.hourly_gross, exactRow.monthly_gross) : { hourly: null, monthly: null };
+        const hourlyText = (exactPair.hourly !== null)
+          ? formatPrice(exactPair.hourly, (exactRow && exactRow.currency) || type.price_currency)
+          : ((fallbackPair.hourly !== null) ? ('from ' + formatPrice(fallbackPair.hourly, type.price_currency)) : '-');
+        const monthlyText = (exactPair.monthly !== null)
+          ? formatPrice(exactPair.monthly, (exactRow && exactRow.currency) || type.price_currency)
+          : ((fallbackPair.monthly !== null) ? ('from ' + formatPrice(fallbackPair.monthly, type.price_currency)) : '-');
+        const trafficText = formatIncludedTraffic(type.included_traffic);
+
+        const rowClass = 'order-hetzner-server-type-table-row order-hetzner-server-type-btn'
+          + (isSelected ? ' is-selected' : '')
+          + (isAvailable ? '' : ' is-inactive');
+
+        chunks.push(
+          '<button type="button" class="' + rowClass + '" data-server-type="' + esc(name) + '" data-active="' + (isAvailable ? '1' : '0') + '">'
+            + '<div class="col-name">' + esc(name)
+              + (arch ? ' <span class="badge text-bg-info ms-1">' + esc(getArchitectureLabel(arch)) + '</span>' : '')
+              + (isAvailable ? '' : ' <span class="badge text-bg-secondary ms-1">Inactive</span>')
+            + '</div>'
+            + '<div class="col-meta col-cores">' + esc(String(type.cores || 0)) + '</div>'
+            + '<div class="col-meta col-memory">' + esc(String(type.memory || 0)) + ' GB</div>'
+            + '<div class="col-meta col-disk">' + esc(String(type.disk || 0)) + ' GB</div>'
+            + '<div class="col-meta col-traffic">' + esc(trafficText) + '</div>'
+            + '<div class="col-price col-hourly">' + esc(hourlyText) + '</div>'
+            + '<div class="col-price col-monthly">' + esc(monthlyText) + '</div>'
+          + '</button>'
+        );
+      });
+    }
 
     wrap.innerHTML = chunks.join('');
     wrap.querySelectorAll('.order-hetzner-server-category-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
         const key = String(btn.getAttribute('data-category') || '');
-        if (!key || key === selectedServerCategory) return;
+        if (!key) return;
+        if (key === selectedServerCategory) return;
         selectedServerCategory = key;
         const before = String(input.value || '');
         populateServerTypes();
@@ -1000,6 +1258,28 @@
           input.dispatchEvent(new Event('change'));
         } else {
           renderTypeHint();
+          populateImages();
+          renderOptionPricingHints();
+          updateBillingSummary();
+        }
+      });
+    });
+    wrap.querySelectorAll('.order-hetzner-server-architecture-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const key = String(btn.getAttribute('data-category') || '');
+        const arch = String(btn.getAttribute('data-architecture') || '');
+        if (!key || !arch) return;
+        if (String(selectedCategoryArchitecture[key] || '') === arch && key === selectedServerCategory) return;
+        selectedCategoryArchitecture[key] = arch;
+        selectedServerCategory = key;
+        const before = String(input.value || '');
+        populateServerTypes();
+        if (String(input.value || '') !== before) {
+          input.dispatchEvent(new Event('change'));
+        } else {
+          renderTypeHint();
+          populateImages();
+          renderOptionPricingHints();
           updateBillingSummary();
         }
       });
@@ -1009,6 +1289,16 @@
         if (String(btn.getAttribute('data-active') || '1') !== '1') return;
         const value = String(btn.getAttribute('data-server-type') || '');
         if (!value) return;
+        const selectedType = types.find(function(type) {
+          return String(type.name || '') === value;
+        }) || null;
+        if (selectedType) {
+          selectedServerCategory = getServerTypeCategory(selectedType.name, selectedType.cpu_type || selectedType.cpuType || '');
+          const selectedArchValue = normalizeArchitectureValue(selectedType.architecture || selectedType.architecture_raw || '');
+          if (selectedArchValue) {
+            selectedCategoryArchitecture[selectedServerCategory] = selectedArchValue;
+          }
+        }
         input.value = value;
         populateServerTypes();
         input.dispatchEvent(new Event('change'));
@@ -1110,15 +1400,30 @@
     });
     const source = compatible.length ? compatible : allImages;
 
+    const current = String(el.value || '').trim();
+    const defaultImage = String(cfg.image || '').trim();
+    let selectedName = '';
+    if (source.some(function(image) { return String((image || {}).name || '') === current; })) {
+      selectedName = current;
+    } else if (source.some(function(image) { return String((image || {}).name || '') === defaultImage; })) {
+      selectedName = defaultImage;
+    } else {
+      const first = source.find(function(image) { return !!String((image || {}).name || ''); }) || null;
+      selectedName = first ? String(first.name || '') : '';
+    }
+
     const options = ['<option value="">Select image</option>'];
     source.forEach(function(image) {
       const name = String((image || {}).name || '');
       if (!name) return;
-      const selected = cfg.image === name ? ' selected' : '';
+      const selected = selectedName === name ? ' selected' : '';
       options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(name + ((image && image.description) ? ' | ' + image.description : '')) + '</option>');
     });
 
     el.innerHTML = options.join('');
+    if (selectedName) {
+      el.value = selectedName;
+    }
   }
 
   function populateFirewalls() {

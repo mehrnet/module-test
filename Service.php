@@ -752,6 +752,7 @@ class Service
                 'cores' => (int) ($type['cores'] ?? 0),
                 'memory' => (int) ($type['memory'] ?? 0),
                 'disk' => (int) ($type['disk'] ?? 0),
+                'included_traffic' => isset($type['included_traffic']) && is_numeric($type['included_traffic']) ? (float) $type['included_traffic'] : null,
                 'cpu_type' => (string) ($type['cpu_type'] ?? ''),
                 'architecture' => $this->normalizeArchitectureValue($type['architecture'] ?? ''),
                 'architecture_raw' => (string) ($type['architecture'] ?? ''),
@@ -925,6 +926,15 @@ class Service
                     )));
                     if (trim((string) ($existing['cpu_type'] ?? '')) === '' && trim((string) ($type['cpu_type'] ?? '')) !== '') {
                         $existing['cpu_type'] = (string) $type['cpu_type'];
+                    }
+                    $existingTraffic = isset($existing['included_traffic']) && is_numeric($existing['included_traffic'])
+                        ? (float) $existing['included_traffic']
+                        : null;
+                    $incomingTraffic = isset($type['included_traffic']) && is_numeric($type['included_traffic'])
+                        ? (float) $type['included_traffic']
+                        : null;
+                    if ($existingTraffic === null && $incomingTraffic !== null) {
+                        $existing['included_traffic'] = $incomingTraffic;
                     }
 
                     $existing['pricing'] = $this->mergeServerTypePricing(
