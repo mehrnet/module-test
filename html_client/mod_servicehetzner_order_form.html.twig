@@ -469,6 +469,35 @@
     return converted.amount.toFixed(5) + ' ' + esc(displayCode) + ' / hour';
   }
 
+  function resolveDisplayCurrencyCode(sourceCurrency) {
+    const source = String(sourceCurrency || 'EUR').trim().toUpperCase() || 'EUR';
+    const preferred = String(billingCurrencyCode || '').trim().toUpperCase();
+    const converted = convertCurrencyAmount(1, source, preferred || source);
+    return converted.converted ? (preferred || source) : source;
+  }
+
+  function getDisplayHourlyRounded(v, currency) {
+    const n = Number(v);
+    if (Number.isNaN(n) || n <= 0) return 0;
+    const marked = n * (1 + (cfg.priceMarkupPercent / 100));
+    const sourceCurrency = String(currency || 'EUR').trim().toUpperCase() || 'EUR';
+    const preferredCurrency = String(billingCurrencyCode || '').trim().toUpperCase();
+    const converted = convertCurrencyAmount(marked, sourceCurrency, preferredCurrency || sourceCurrency);
+    return Number(converted.amount.toFixed(5));
+  }
+
+  function formatDisplayAmountRaw(v, currencyCode) {
+    const n = Number(v);
+    if (Number.isNaN(n)) return '-';
+    return n.toFixed(5) + ' ' + esc(currencyCode || '');
+  }
+
+  function formatDisplayHourlyRaw(v, currencyCode) {
+    const n = Number(v);
+    if (Number.isNaN(n)) return '-';
+    return n.toFixed(5) + ' ' + esc(currencyCode || '') + ' / hour';
+  }
+
   function normalizeCurrencyCode(code) {
     const value = String(code || '').trim().toUpperCase();
     return /^[A-Z]{3}$/.test(value) ? value : '';
@@ -1067,10 +1096,11 @@
     if (serverMonthly === null) serverMonthly = 0;
 
     const options = (catalog.option_pricing || {});
+    const optionCurrency = String(options.currency || currency || 'EUR');
     let ipv4Hourly = 0;
     let ipv4Monthly = 0;
     if (parseBooleanInput('order_hetzner_ipv4', true)) {
-      const ipv4Row = resolveOptionPrice(options.ipv4 || {}, location, currency);
+      const ipv4Row = resolveOptionPrice(options.ipv4 || {}, location, optionCurrency);
       if (ipv4Row) {
         const pair = normalizeRatePair(ipv4Row.hourly_gross, ipv4Row.monthly_gross);
         if (pair.hourly !== null) ipv4Hourly = pair.hourly;
@@ -1081,7 +1111,7 @@
     let ipv6Hourly = 0;
     let ipv6Monthly = 0;
     if (parseBooleanInput('order_hetzner_ipv6', true)) {
-      const ipv6Row = resolveOptionPrice(options.ipv6 || {}, location, currency);
+      const ipv6Row = resolveOptionPrice(options.ipv6 || {}, location, optionCurrency);
       if (ipv6Row) {
         const pair = normalizeRatePair(ipv6Row.hourly_gross, ipv6Row.monthly_gross);
         if (pair.hourly !== null) ipv6Hourly = pair.hourly;
@@ -1143,26 +1173,33 @@
       }
 
       const breakdown = infra.breakdown || {};
-      const serverTotal = (Number(breakdown.serverHourly) || 0) * hours;
-      const ipv4Total = (Number(breakdown.ipv4Hourly) || 0) * hours;
-      const ipv6Total = (Number(breakdown.ipv6Hourly) || 0) * hours;
-      const backupsTotal = (Number(breakdown.backupsHourly) || 0) * hours;
-      const invoiceHoursTotal = (Number(infra.hourly) || 0) * hours;
+      const displayCurrency = resolveDisplayCurrencyCode(infra.currency);
+      const invoiceHourlyDisplay = getDisplayHourlyRounded(infra.hourly, infra.currency);
+      const serverHourlyDisplay = getDisplayHourlyRounded(breakdown.serverHourly, infra.currency);
+      const ipv4HourlyDisplay = getDisplayHourlyRounded(breakdown.ipv4Hourly, infra.currency);
+      const ipv6HourlyDisplay = getDisplayHourlyRounded(breakdown.ipv6Hourly, infra.currency);
+      const backupsHourlyDisplay = getDisplayHourlyRounded(breakdown.backupsHourly, infra.currency);
 
-      const formulaPrefix = hours + ' hours * ' + formatHourlyOnlyPrice(infra.hourly, infra.currency);
+      const serverTotal = serverHourlyDisplay * hours;
+      const ipv4Total = ipv4HourlyDisplay * hours;
+      const ipv6Total = ipv6HourlyDisplay * hours;
+      const backupsTotal = backupsHourlyDisplay * hours;
+      const invoiceHoursTotal = invoiceHourlyDisplay * hours;
+
+      const formulaPrefix = hours + ' hours * ' + formatDisplayHourlyRaw(invoiceHourlyDisplay, displayCurrency);
       baseLine.textContent = '';
-      totalLine.textContent = 'Invoice: ' + formulaPrefix + ' = ' + formatPrice(invoiceHoursTotal, infra.currency);
+      totalLine.textContent = 'Invoice: ' + formulaPrefix + ' = ' + formatDisplayAmountRaw(invoiceHoursTotal, displayCurrency);
 
       const detailLines = [];
-      detailLines.push('server = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.serverHourly, infra.currency) + ' = ' + formatPrice(serverTotal, infra.currency));
-      if ((Number(breakdown.ipv4Hourly) || 0) > 0) {
-        detailLines.push('ipv4 = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.ipv4Hourly, infra.currency) + ' = ' + formatPrice(ipv4Total, infra.currency));
+      detailLines.push('server = ' + hours + ' hours * ' + formatDisplayHourlyRaw(serverHourlyDisplay, displayCurrency) + ' = ' + formatDisplayAmountRaw(serverTotal, displayCurrency));
+      if (ipv4HourlyDisplay > 0) {
+        detailLines.push('ipv4 = ' + hours + ' hours * ' + formatDisplayHourlyRaw(ipv4HourlyDisplay, displayCurrency) + ' = ' + formatDisplayAmountRaw(ipv4Total, displayCurrency));
       }
-      if ((Number(breakdown.ipv6Hourly) || 0) > 0) {
-        detailLines.push('ipv6 = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.ipv6Hourly, infra.currency) + ' = ' + formatPrice(ipv6Total, infra.currency));
+      if (ipv6HourlyDisplay > 0) {
+        detailLines.push('ipv6 = ' + hours + ' hours * ' + formatDisplayHourlyRaw(ipv6HourlyDisplay, displayCurrency) + ' = ' + formatDisplayAmountRaw(ipv6Total, displayCurrency));
       }
-      if ((Number(breakdown.backupsHourly) || 0) > 0) {
-        detailLines.push('backup = ' + hours + ' hours * ' + formatHourlyOnlyPrice(breakdown.backupsHourly, infra.currency) + ' = ' + formatPrice(backupsTotal, infra.currency));
+      if (backupsHourlyDisplay > 0) {
+        detailLines.push('backup = ' + hours + ' hours * ' + formatDisplayHourlyRaw(backupsHourlyDisplay, displayCurrency) + ' = ' + formatDisplayAmountRaw(backupsTotal, displayCurrency));
       }
       addonsLine.innerHTML = detailLines.map(function(line) {
         return '<div class="order-hetzner-billing-breakdown-line">' + esc(line) + '</div>';
