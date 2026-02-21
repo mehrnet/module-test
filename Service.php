@@ -34,6 +34,7 @@ class Service
     public function install(): bool
     {
         $this->ensureSchema();
+        $this->publishModelTableOverrides();
 
         $config = $this->getModuleConfig();
         if (!is_array($config) || empty($config)) {
@@ -63,6 +64,7 @@ class Service
     public function update(array $manifest): bool
     {
         $this->ensureSchema();
+        $this->publishModelTableOverrides();
 
         return true;
     }
@@ -72,6 +74,8 @@ class Service
      */
     public function validateOrderData(array &$data): void
     {
+        $this->publishModelTableOverrides();
+
         if (!isset($data['server_type']) || trim((string) $data['server_type']) === '') {
             throw new \FOSSBilling\InformationException('Hetzner order config is missing server_type.');
         }
@@ -100,9 +104,13 @@ class Service
             $data['quantity'] = $hours;
 
             $pricing = $this->computePrepaidPricingBreakdown($data);
-            if (is_array($pricing) && isset($pricing['total_hourly_base']) && is_numeric($pricing['total_hourly_base'])) {
-                $this->attachPrepaidPricingToConfig($data, $pricing);
+            $totalHourly = is_array($pricing) && isset($pricing['total_hourly_base']) && is_numeric($pricing['total_hourly_base'])
+                ? (float) $pricing['total_hourly_base']
+                : 0.0;
+            if ($totalHourly <= 0) {
+                throw new \FOSSBilling\InformationException('Unable to determine a non-zero hourly price from Hetzner catalog for the selected server and location.');
             }
+            $this->attachPrepaidPricingToConfig($data, $pricing);
         }
     }
 
@@ -1750,6 +1758,43 @@ class Service
                 $this->di['db']->exec($alterSql);
             } catch (\Throwable $e) {
                 // Ignore "duplicate column" and other already-migrated scenarios.
+            }
+        }
+    }
+
+    private function publishModelTableOverrides(): void
+    {
+        $libraryPath = defined('PATH_LIBRARY') ? (string) PATH_LIBRARY : '';
+        if ($libraryPath === '') {
+            return;
+        }
+
+        $targetDir = rtrim($libraryPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'Model';
+        if (!is_dir($targetDir) || !is_writable($targetDir)) {
+            return;
+        }
+
+        $sourceDir = __DIR__ . DIRECTORY_SEPARATOR . 'model_overrides';
+        $files = [
+            'ProductHetznerTable.php',
+            'ProductAddonTable.php',
+        ];
+
+        foreach ($files as $file) {
+            $source = $sourceDir . DIRECTORY_SEPARATOR . $file;
+            if (!is_file($source)) {
+                continue;
+            }
+
+            $target = $targetDir . DIRECTORY_SEPARATOR . $file;
+            $sourceBody = @file_get_contents($source);
+            if (!is_string($sourceBody) || $sourceBody === '') {
+                continue;
+            }
+
+            $targetBody = is_file($target) ? @file_get_contents($target) : false;
+            if (!is_string($targetBody) || $targetBody !== $sourceBody) {
+                @file_put_contents($target, $sourceBody);
             }
         }
     }
