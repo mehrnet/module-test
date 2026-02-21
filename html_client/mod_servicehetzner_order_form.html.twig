@@ -346,6 +346,7 @@
 
   let catalog = { server_types: [], locations: [], images: [], firewalls: [], option_pricing: {} };
   let billingCurrencyCode = '';
+  let currencyRatesByCode = {};
   let selectedServerCategory = 'cost_optimized';
   let selectedCategoryArchitecture = {};
 
@@ -367,7 +368,55 @@
       return esc(v);
     }
     const marked = n * (1 + (cfg.priceMarkupPercent / 100));
-    return marked.toFixed(5) + ' ' + esc(currency || 'EUR');
+    const sourceCurrency = String(currency || 'EUR').trim().toUpperCase() || 'EUR';
+    const preferredCurrency = String(billingCurrencyCode || '').trim().toUpperCase();
+    const converted = convertCurrencyAmount(marked, sourceCurrency, preferredCurrency || sourceCurrency);
+    const displayCode = converted.converted ? (preferredCurrency || sourceCurrency) : sourceCurrency;
+    return converted.amount.toFixed(5) + ' ' + esc(displayCode);
+  }
+
+  function normalizeCurrencyCode(code) {
+    const value = String(code || '').trim().toUpperCase();
+    return /^[A-Z]{3}$/.test(value) ? value : '';
+  }
+
+  function parseConversionRate(value) {
+    const parsed = Number(value);
+    return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+  }
+
+  function setCurrencyRate(code, rate) {
+    const normalizedCode = normalizeCurrencyCode(code);
+    const normalizedRate = parseConversionRate(rate);
+    if (!normalizedCode || normalizedRate === null) {
+      return false;
+    }
+    currencyRatesByCode[normalizedCode] = normalizedRate;
+    return true;
+  }
+
+  function getCrossCurrencyRate(fromCode, toCode) {
+    const from = normalizeCurrencyCode(fromCode);
+    const to = normalizeCurrencyCode(toCode);
+    if (!from || !to) return null;
+    if (from === to) return 1;
+
+    const fromRate = parseConversionRate(currencyRatesByCode[from]);
+    const toRate = parseConversionRate(currencyRatesByCode[to]);
+    if (fromRate === null || toRate === null) return null;
+    return toRate / fromRate;
+  }
+
+  function convertCurrencyAmount(amount, fromCode, toCode) {
+    const value = Number(amount);
+    if (Number.isNaN(value)) {
+      return { amount: 0, converted: false };
+    }
+    const rate = getCrossCurrencyRate(fromCode, toCode);
+    if (rate === null) {
+      return { amount: value, converted: false };
+    }
+    return { amount: value * rate, converted: true };
   }
 
   function formatIncludedTraffic(value) {
@@ -468,7 +517,8 @@
         groupTitle: 'Shared Resources',
         order: 10,
         description: 'Cost-efficient shared vCPU plans for variable workloads.',
-        badges: ['Cost effective', 'Low CPU usage']
+        badges: ['Cost effective', 'Low CPU usage'],
+        limitedAvailability: true
       },
       balanced: {
         title: 'Regular Performance',
@@ -476,7 +526,8 @@
         groupTitle: 'Shared Resources',
         order: 20,
         description: 'Shared vCPU plans with stronger baseline performance.',
-        badges: ['Best price/performance', 'Low to medium CPU usage']
+        badges: ['Best price/performance', 'Low to medium CPU usage'],
+        limitedAvailability: false
       },
       dedicated_cpu: {
         title: 'General Purpose',
@@ -484,7 +535,8 @@
         groupTitle: 'Dedicated Resources',
         order: 30,
         description: 'Dedicated vCPU plans for consistent production workloads.',
-        badges: ['Predictable performance', 'Sustained CPU usage']
+        badges: ['Predictable performance', 'Sustained CPU usage'],
+        limitedAvailability: false
       },
       other: {
         title: 'Other',
@@ -492,7 +544,8 @@
         groupTitle: 'Other',
         order: 99,
         description: 'Additional server families',
-        badges: []
+        badges: [],
+        limitedAvailability: false
       }
     };
     return map[key] || map.other;
@@ -1240,7 +1293,7 @@
             + '<div class="small mt-1">' + esc(meta.description || '') + '</div>'
           + '</button>'
         );
-        if (availableCount < typesInCategory.length) {
+        if (meta.limitedAvailability) {
           chunks.push('<div class="mt-2"><span class="badge text-bg-warning">Limited availability</span></div>');
         }
         if (Array.isArray(meta.badges) && meta.badges.length) {
@@ -1553,11 +1606,39 @@
     syncMappedAddons();
     updateBillingSummary();
 
+    function refreshCurrencyRates() {
+      if (!billingCurrencyCode) {
+        updateBillingSummary();
+        renderOptionPricingHints();
+        return;
+      }
+
+      const code = String(billingCurrencyCode || '').trim().toUpperCase();
+      API.guest.post('currency/get', { code: code }, function(result) {
+        setCurrencyRate(code, result && result.conversion_rate);
+
+        API.guest.post('currency/get', { code: 'EUR' }, function(eurResult) {
+          setCurrencyRate('EUR', eurResult && eurResult.conversion_rate);
+          renderOptionPricingHints();
+          updateBillingSummary();
+        }, function() {
+          renderOptionPricingHints();
+          updateBillingSummary();
+        });
+      }, function() {
+        renderOptionPricingHints();
+        updateBillingSummary();
+      });
+    }
+
     API.guest.post('cart/get_currency', {}, function(result) {
       if (result && result.code) {
-        billingCurrencyCode = String(result.code);
+        billingCurrencyCode = String(result.code || '').trim().toUpperCase();
+        setCurrencyRate(billingCurrencyCode, result.conversion_rate);
       }
-      updateBillingSummary();
+      refreshCurrencyRates();
+    }, function() {
+      refreshCurrencyRates();
     });
 
     loadCatalog();
