@@ -9,6 +9,8 @@
 
 namespace Box\Mod\Servicehetzner;
 
+require_once __DIR__ . '/ProductTables.php';
+
 class Service
 {
     protected $di;
@@ -96,6 +98,11 @@ class Service
             }
             $data['prepaid_hours'] = $hours;
             $data['quantity'] = $hours;
+
+            $pricing = $this->computePrepaidPricingBreakdown($data);
+            if (is_array($pricing) && isset($pricing['total_hourly_base']) && is_numeric($pricing['total_hourly_base'])) {
+                $this->attachPrepaidPricingToConfig($data, $pricing);
+            }
         }
     }
 
@@ -159,9 +166,15 @@ class Service
                 throw new \FOSSBilling\InformationException('Prepaid hourly mode does not support recurring periods. Configure this product with one-time pricing where the unit price equals one hour.');
             }
 
+            $dynamicTotalRate = isset($orderConfig['servicehetzner_total_hourly_base']) && is_numeric($orderConfig['servicehetzner_total_hourly_base'])
+                ? (float) $orderConfig['servicehetzner_total_hourly_base']
+                : 0.0;
             $orderUnitPrice = isset($order->price) && is_numeric($order->price) ? (float) $order->price : 0.0;
             if ($orderUnitPrice <= 0) {
-                throw new \FOSSBilling\InformationException('Prepaid hourly mode requires a non-zero one-time product unit price (per hour).');
+                $orderUnitPrice = $dynamicTotalRate;
+            }
+            if ($orderUnitPrice <= 0) {
+                throw new \FOSSBilling\InformationException('Prepaid hourly mode requires a non-zero hourly rate (dynamic catalog pricing or one-time product unit price).');
             }
 
             $hourlyRate = (float) ($billingPolicy['hourly_rate'] ?? 0);
@@ -382,6 +395,29 @@ class Service
         $productConfig = $this->decodeJson((string) $product->config);
 
         return array_merge($productConfig, $data);
+    }
+
+    public function getCartProductTitle(\Model_Product $product, array $config): string
+    {
+        $title = trim((string) ($product->title ?? ''));
+        $title = $title !== '' ? $title : 'Hetzner Cloud';
+        $billingMode = $this->normalizeBillingMode((string) ($config['billing_mode'] ?? self::BILLING_MODE_STANDARD));
+        if ($billingMode !== self::BILLING_MODE_PREPAID_HOURS) {
+            return $title;
+        }
+
+        $hours = $this->normalizeHours(
+            $config['prepaid_hours'] ?? $config['quantity'] ?? 0,
+            (int) ($config['prepaid_hours_min'] ?? 1),
+            (int) ($config['prepaid_hours_max'] ?? 8760),
+            (int) ($config['prepaid_hours_default'] ?? 24)
+        );
+        $serverType = strtoupper(trim((string) ($config['server_type'] ?? '')));
+        if ($serverType === '') {
+            return $title . ' (' . $hours . ' hours)';
+        }
+
+        return 'Hetzner ' . $serverType . ' (' . $hours . ' hours)';
     }
 
     public function getModuleConfig(): array
@@ -1287,6 +1323,106 @@ class Service
         return true;
     }
 
+    public function onAfterProductAddedToCart(\Box_Event $event): void
+    {
+        try {
+            $params = $event->getParameters();
+            $cartId = (int) ($params['cart_id'] ?? 0);
+            $productId = (int) ($params['product_id'] ?? 0);
+            if ($cartId <= 0 || $productId <= 0) {
+                return;
+            }
+
+            $rows = $this->di['db']->find(
+                'CartProduct',
+                'cart_id = :cart_id AND product_id = :product_id ORDER BY id DESC',
+                [
+                    ':cart_id' => $cartId,
+                    ':product_id' => $productId,
+                ]
+            );
+            if (empty($rows)) {
+                return;
+            }
+
+            $mainItem = null;
+            $mainConfig = [];
+            foreach ($rows as $row) {
+                if (!is_object($row)) {
+                    continue;
+                }
+                $config = $this->decodeJson((string) ($row->config ?? ''));
+                $mode = $this->normalizeBillingMode((string) ($config['billing_mode'] ?? self::BILLING_MODE_STANDARD));
+                if ($mode !== self::BILLING_MODE_PREPAID_HOURS) {
+                    continue;
+                }
+                $mainItem = $row;
+                $mainConfig = $config;
+                break;
+            }
+
+            if (!$mainItem) {
+                return;
+            }
+
+            $pricing = $this->computePrepaidPricingBreakdown($mainConfig);
+            if (!is_array($pricing)) {
+                return;
+            }
+
+            $this->attachPrepaidPricingToConfig($mainConfig, $pricing);
+            $mainItem->config = json_encode($mainConfig);
+            $this->di['db']->store($mainItem);
+
+            $hours = max(1, (int) ($pricing['hours'] ?? $mainConfig['quantity'] ?? 1));
+            $addonMap = [
+                'ipv4' => (int) ($mainConfig['addon_id_ipv4'] ?? 0),
+                'ipv6' => (int) ($mainConfig['addon_id_ipv6'] ?? 0),
+                'backup' => (int) ($mainConfig['addon_id_backups'] ?? 0),
+            ];
+            $componentRates = [
+                'ipv4' => max(0, (float) ($pricing['ipv4_hourly_base'] ?? 0)),
+                'ipv6' => max(0, (float) ($pricing['ipv6_hourly_base'] ?? 0)),
+                'backup' => max(0, (float) ($pricing['backup_hourly_base'] ?? 0)),
+            ];
+
+            foreach ($addonMap as $component => $addonId) {
+                if ($addonId <= 0) {
+                    continue;
+                }
+                $addonRows = $this->di['db']->find(
+                    'CartProduct',
+                    'cart_id = :cart_id AND product_id = :product_id AND id > :main_id ORDER BY id DESC',
+                    [
+                        ':cart_id' => $cartId,
+                        ':product_id' => $addonId,
+                        ':main_id' => (int) $mainItem->id,
+                    ]
+                );
+                if (empty($addonRows)) {
+                    continue;
+                }
+                $addonRow = $addonRows[0];
+                if (!is_object($addonRow)) {
+                    continue;
+                }
+                $addonConfig = $this->decodeJson((string) ($addonRow->config ?? ''));
+                $addonConfig['quantity'] = $hours;
+                $addonConfig['servicehetzner_dynamic_pricing'] = '1';
+                $addonConfig['servicehetzner_dynamic_component'] = $component;
+                $addonConfig['servicehetzner_dynamic_unit_price'] = $componentRates[$component] ?? 0;
+                $addonConfig['servicehetzner_hours'] = $hours;
+                $addonConfig['servicehetzner_price_source_currency'] = (string) ($pricing['source_currency'] ?? '');
+                $addonConfig['servicehetzner_base_currency'] = (string) ($pricing['base_currency'] ?? '');
+                $addonConfig['servicehetzner_markup_percent'] = (float) ($pricing['markup_percent'] ?? 0);
+                $addonRow->config = json_encode($addonConfig);
+                $this->di['db']->store($addonRow);
+            }
+        } catch (\Throwable $e) {
+            error_log('Servicehetzner cart dynamic pricing sync failed: ' . $e->getMessage());
+        }
+    }
+
     public function runHourlyBillingTick(bool $applyTopups = true): array
     {
         $this->ensureSchema();
@@ -1368,7 +1504,12 @@ class Service
             throw new \FOSSBilling\InformationException('Top-up hours are invalid.');
         }
 
+        $orderConfig = $this->getOrderConfig($order);
+        $pricing = $this->computePrepaidPricingBreakdown($orderConfig);
         $hourlyRate = (float) ($summary['hourly_rate'] ?? 0);
+        if (is_array($pricing) && isset($pricing['total_hourly_base']) && is_numeric($pricing['total_hourly_base'])) {
+            $hourlyRate = max(0, (float) $pricing['total_hourly_base']);
+        }
         if ($hourlyRate <= 0) {
             $hourlyRate = $this->resolveHourlyRateFromOrder($order, $summary);
         }
@@ -1381,20 +1522,70 @@ class Service
             throw new \FOSSBilling\InformationException('Client not found for this service.');
         }
 
+        $serverTypeLabel = strtoupper(trim((string) ($orderConfig['server_type'] ?? 'Server')));
+        if ($serverTypeLabel === '') {
+            $serverTypeLabel = 'Server';
+        }
+        $breakdownItems = [];
+        if (is_array($pricing)) {
+            $serverRate = max(0, (float) ($pricing['server_hourly_base'] ?? 0));
+            $ipv4Rate = max(0, (float) ($pricing['ipv4_hourly_base'] ?? 0));
+            $ipv6Rate = max(0, (float) ($pricing['ipv6_hourly_base'] ?? 0));
+            $backupRate = max(0, (float) ($pricing['backup_hourly_base'] ?? 0));
+
+            $breakdownItems[] = [
+                'title' => 'Hetzner ' . $serverTypeLabel . ' (' . $hours . 'h)',
+                'price' => $serverRate,
+                'quantity' => $hours,
+                'unit' => 'hour',
+                'taxed' => false,
+                'type' => \Model_InvoiceItem::TYPE_CUSTOM,
+                'task' => \Model_InvoiceItem::TASK_VOID,
+            ];
+            $breakdownItems[] = [
+                'title' => 'IPv4 address (' . $hours . 'h)',
+                'price' => $ipv4Rate,
+                'quantity' => $hours,
+                'unit' => 'hour',
+                'taxed' => false,
+                'type' => \Model_InvoiceItem::TYPE_CUSTOM,
+                'task' => \Model_InvoiceItem::TASK_VOID,
+            ];
+            $breakdownItems[] = [
+                'title' => 'IPv6 address (' . $hours . 'h)',
+                'price' => $ipv6Rate,
+                'quantity' => $hours,
+                'unit' => 'hour',
+                'taxed' => false,
+                'type' => \Model_InvoiceItem::TYPE_CUSTOM,
+                'task' => \Model_InvoiceItem::TASK_VOID,
+            ];
+            $breakdownItems[] = [
+                'title' => 'Backups (' . $hours . 'h)',
+                'price' => $backupRate,
+                'quantity' => $hours,
+                'unit' => 'hour',
+                'taxed' => false,
+                'type' => \Model_InvoiceItem::TYPE_CUSTOM,
+                'task' => \Model_InvoiceItem::TASK_VOID,
+            ];
+        }
+        if (empty($breakdownItems)) {
+            $breakdownItems[] = [
+                'title' => 'Hetzner hourly top-up (' . $hours . 'h) for order #' . $order->id,
+                'price' => $hourlyRate,
+                'quantity' => $hours,
+                'unit' => 'hour',
+                'taxed' => false,
+                'type' => \Model_InvoiceItem::TYPE_CUSTOM,
+                'task' => \Model_InvoiceItem::TASK_VOID,
+            ];
+        }
+
         $invoiceService = $this->di['mod_service']('Invoice');
         $invoice = $invoiceService->prepareInvoice($client, [
             'approve' => true,
-            'items' => [
-                [
-                    'title' => 'Hetzner hourly top-up (' . $hours . 'h) for order #' . $order->id,
-                    'price' => $hourlyRate,
-                    'quantity' => $hours,
-                    'unit' => 'hour',
-                    'taxed' => false,
-                    'type' => \Model_InvoiceItem::TYPE_CUSTOM,
-                    'task' => \Model_InvoiceItem::TASK_VOID,
-                ],
-            ],
+            'items' => $breakdownItems,
         ]);
 
         $topup = $this->di['db']->dispense('service_hetzner_topup');
@@ -1753,6 +1944,12 @@ class Service
             $policy['default_hours']
         );
         $hourlyRate = (float) ($policy['hourly_rate'] ?? 0);
+        $dynamicHourly = isset($orderConfig['servicehetzner_total_hourly_base']) && is_numeric($orderConfig['servicehetzner_total_hourly_base'])
+            ? (float) $orderConfig['servicehetzner_total_hourly_base']
+            : 0.0;
+        if ($dynamicHourly > 0) {
+            $hourlyRate = $dynamicHourly;
+        }
         if ($hourlyRate <= 0) {
             $hourlyRate = $this->resolveHourlyRateFromOrder($order, ['hourly_rate' => $hourlyRate]);
         }
@@ -1793,6 +1990,12 @@ class Service
         $hourlyRate = isset($state['hourly_rate']) && is_numeric($state['hourly_rate'])
             ? max(0, (float) $state['hourly_rate'])
             : max(0, (float) ($policy['hourly_rate'] ?? 0));
+        $dynamicHourly = isset($orderConfig['servicehetzner_total_hourly_base']) && is_numeric($orderConfig['servicehetzner_total_hourly_base'])
+            ? max(0, (float) $orderConfig['servicehetzner_total_hourly_base'])
+            : 0.0;
+        if ($dynamicHourly > 0) {
+            $hourlyRate = $dynamicHourly;
+        }
         if ($hourlyRate <= 0) {
             $hourlyRate = $this->resolveHourlyRateFromOrder($order, ['hourly_rate' => $hourlyRate]);
         }
@@ -2726,6 +2929,276 @@ class Service
         ksort($result);
 
         return array_values($result);
+    }
+
+    private function attachPrepaidPricingToConfig(array &$data, array $pricing): void
+    {
+        $hours = max(1, (int) ($pricing['hours'] ?? $data['quantity'] ?? 1));
+        $serverHourlyBase = max(0, (float) ($pricing['server_hourly_base'] ?? 0));
+        $ipv4HourlyBase = max(0, (float) ($pricing['ipv4_hourly_base'] ?? 0));
+        $ipv6HourlyBase = max(0, (float) ($pricing['ipv6_hourly_base'] ?? 0));
+        $backupHourlyBase = max(0, (float) ($pricing['backup_hourly_base'] ?? 0));
+        $totalHourlyBase = max(0, (float) ($pricing['total_hourly_base'] ?? 0));
+
+        $hasAddonMapping = (int) ($data['addon_id_ipv4'] ?? 0) > 0
+            || (int) ($data['addon_id_ipv6'] ?? 0) > 0
+            || (int) ($data['addon_id_backups'] ?? 0) > 0;
+        $mainHourly = $hasAddonMapping ? $serverHourlyBase : $totalHourlyBase;
+
+        $data['servicehetzner_dynamic_pricing'] = '1';
+        $data['servicehetzner_dynamic_unit_price'] = $mainHourly;
+        $data['servicehetzner_server_hourly_base'] = $serverHourlyBase;
+        $data['servicehetzner_ipv4_hourly_base'] = $ipv4HourlyBase;
+        $data['servicehetzner_ipv6_hourly_base'] = $ipv6HourlyBase;
+        $data['servicehetzner_backup_hourly_base'] = $backupHourlyBase;
+        $data['servicehetzner_total_hourly_base'] = $totalHourlyBase;
+        $data['servicehetzner_hours'] = $hours;
+        $data['servicehetzner_price_source_currency'] = (string) ($pricing['source_currency'] ?? '');
+        $data['servicehetzner_base_currency'] = (string) ($pricing['base_currency'] ?? '');
+        $data['servicehetzner_markup_percent'] = (float) ($pricing['markup_percent'] ?? 0);
+        $data['servicehetzner_component_split'] = $hasAddonMapping ? '1' : '0';
+    }
+
+    private function computePrepaidPricingBreakdown(array $orderConfig): ?array
+    {
+        $policy = $this->resolveBillingPolicyFromOrderConfig($orderConfig);
+        if (($policy['mode'] ?? self::BILLING_MODE_STANDARD) !== self::BILLING_MODE_PREPAID_HOURS) {
+            return null;
+        }
+
+        $productConfig = is_array($orderConfig['__product_config'] ?? null) ? $orderConfig['__product_config'] : $orderConfig;
+        $serverType = trim((string) $this->resolveSelectedValue($orderConfig, $productConfig, 'server_type', 'allow_server_type_choice'));
+        if ($serverType === '') {
+            return null;
+        }
+
+        $location = trim((string) $this->resolveSelectedValue($orderConfig, $productConfig, 'location', 'allow_location_choice'));
+        $enableIpv4 = $this->resolveBooleanSetting($orderConfig, $productConfig, 'enable_ipv4', true);
+        $enableIpv6 = $this->resolveBooleanSetting($orderConfig, $productConfig, 'enable_ipv6', true);
+        $enableBackups = $this->resolveBooleanSetting($orderConfig, $productConfig, 'enable_backups', false);
+        $markupPercent = isset($orderConfig['price_markup_percent']) && is_numeric($orderConfig['price_markup_percent'])
+            ? (float) $orderConfig['price_markup_percent']
+            : 0.0;
+        $hours = $this->normalizeHours(
+            $orderConfig['prepaid_hours'] ?? $orderConfig['quantity'] ?? $policy['default_hours'],
+            (int) ($policy['min_hours'] ?? 1),
+            (int) ($policy['max_hours'] ?? 8760),
+            (int) ($policy['default_hours'] ?? 24)
+        );
+
+        $catalog = $this->getCatalogForOrderConfig($orderConfig);
+        if (!is_array($catalog)) {
+            return null;
+        }
+
+        $serverRow = $this->findServerTypeRowInCatalog($catalog, $serverType);
+        if (!is_array($serverRow)) {
+            return null;
+        }
+
+        $serverPricing = is_array($serverRow['pricing'] ?? null) ? $serverRow['pricing'] : [];
+        $serverPriceRow = $this->findLocationPriceRow((array) ($serverPricing['location_prices'] ?? []), $location, true);
+        $serverPair = $this->normalizeHourlyMonthlyPair(
+            $serverPriceRow['hourly_gross'] ?? null,
+            $serverPriceRow['monthly_gross'] ?? null,
+            $serverRow['price_hourly_from'] ?? null,
+            $serverRow['price_monthly_from'] ?? null
+        );
+        $serverHourlyRaw = max(0, (float) ($serverPair['hourly'] ?? 0));
+        $sourceCurrency = trim((string) ($serverPriceRow['currency'] ?? $serverRow['price_currency'] ?? ($catalog['option_pricing']['currency'] ?? 'EUR')));
+        if ($sourceCurrency === '') {
+            $sourceCurrency = 'EUR';
+        }
+
+        $optionPricing = is_array($catalog['option_pricing'] ?? null) ? $catalog['option_pricing'] : $this->normalizeOptionPricing([]);
+        $ipv4Row = $this->resolveOptionPriceRow((array) ($optionPricing['ipv4'] ?? []), $location, $sourceCurrency);
+        $ipv4Pair = $this->normalizeHourlyMonthlyPair($ipv4Row['hourly_gross'] ?? null, $ipv4Row['monthly_gross'] ?? null, null, null);
+        $ipv4HourlyRaw = $enableIpv4 ? max(0, (float) ($ipv4Pair['hourly'] ?? 0)) : 0.0;
+
+        $ipv6Row = $this->resolveOptionPriceRow((array) ($optionPricing['ipv6'] ?? []), $location, $sourceCurrency);
+        $ipv6Pair = $this->normalizeHourlyMonthlyPair($ipv6Row['hourly_gross'] ?? null, $ipv6Row['monthly_gross'] ?? null, null, null);
+        $ipv6HourlyRaw = $enableIpv6 ? max(0, (float) ($ipv6Pair['hourly'] ?? 0)) : 0.0;
+
+        $backupPct = isset($optionPricing['backup_percentage']) && is_numeric($optionPricing['backup_percentage'])
+            ? max(0, (float) $optionPricing['backup_percentage'])
+            : 0.0;
+        $backupHourlyRaw = ($enableBackups && $backupPct > 0) ? ($serverHourlyRaw * ($backupPct / 100)) : 0.0;
+
+        $serverHourlyBase = $this->applyMarkupPercent($this->toBaseCurrencyAmount($serverHourlyRaw, $sourceCurrency), $markupPercent);
+        $ipv4HourlyBase = $this->applyMarkupPercent($this->toBaseCurrencyAmount($ipv4HourlyRaw, (string) ($ipv4Row['currency'] ?? $sourceCurrency)), $markupPercent);
+        $ipv6HourlyBase = $this->applyMarkupPercent($this->toBaseCurrencyAmount($ipv6HourlyRaw, (string) ($ipv6Row['currency'] ?? $sourceCurrency)), $markupPercent);
+        $backupHourlyBase = $this->applyMarkupPercent($this->toBaseCurrencyAmount($backupHourlyRaw, $sourceCurrency), $markupPercent);
+        $totalHourlyBase = max(0, $serverHourlyBase + $ipv4HourlyBase + $ipv6HourlyBase + $backupHourlyBase);
+
+        return [
+            'hours' => $hours,
+            'source_currency' => $sourceCurrency,
+            'base_currency' => $this->getDefaultCurrencyCode(),
+            'markup_percent' => $markupPercent,
+            'server_hourly_base' => $serverHourlyBase,
+            'ipv4_hourly_base' => $ipv4HourlyBase,
+            'ipv6_hourly_base' => $ipv6HourlyBase,
+            'backup_hourly_base' => $backupHourlyBase,
+            'total_hourly_base' => $totalHourlyBase,
+            'enable_ipv4' => $enableIpv4,
+            'enable_ipv6' => $enableIpv6,
+            'enable_backups' => $enableBackups,
+            'backup_percentage' => $backupPct,
+            'server_type' => $serverType,
+            'location' => $location,
+        ];
+    }
+
+    private function getCatalogForOrderConfig(array $orderConfig): ?array
+    {
+        try {
+            $projectRef = $this->sanitizeProjectRef((string) ($orderConfig['project_ref'] ?? ''));
+            if ($projectRef !== '') {
+                return $this->getProjectCatalog($projectRef, false);
+            }
+
+            return $this->getGlobalCatalog(false);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    private function findServerTypeRowInCatalog(array $catalog, string $serverType): ?array
+    {
+        $needle = trim($serverType);
+        if ($needle === '') {
+            return null;
+        }
+
+        foreach ((array) ($catalog['server_types'] ?? []) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if ((string) ($row['name'] ?? '') === $needle) {
+                return $row;
+            }
+        }
+
+        return null;
+    }
+
+    private function findLocationPriceRow(array $rows, string $location, bool $allowFallback): ?array
+    {
+        $selected = trim($location);
+        $fallback = null;
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $entry = [
+                'location' => (string) ($row['location'] ?? ''),
+                'hourly_gross' => isset($row['hourly_gross']) && is_numeric($row['hourly_gross']) ? (float) $row['hourly_gross'] : null,
+                'monthly_gross' => isset($row['monthly_gross']) && is_numeric($row['monthly_gross']) ? (float) $row['monthly_gross'] : null,
+                'currency' => (string) ($row['currency'] ?? ''),
+            ];
+            if ($fallback === null) {
+                $fallback = $entry;
+            }
+            if ($selected !== '' && $entry['location'] === $selected) {
+                return $entry;
+            }
+        }
+
+        return $allowFallback ? $fallback : null;
+    }
+
+    private function resolveOptionPriceRow(array $optionPricing, string $location, string $fallbackCurrency): array
+    {
+        $row = $this->findLocationPriceRow((array) ($optionPricing['location_prices'] ?? []), $location, false);
+        if (is_array($row)) {
+            if (trim((string) ($row['currency'] ?? '')) === '') {
+                $row['currency'] = trim((string) ($optionPricing['currency'] ?? $fallbackCurrency));
+            }
+            return $row;
+        }
+
+        return [
+            'location' => '',
+            'hourly_gross' => isset($optionPricing['from_hourly_gross']) && is_numeric($optionPricing['from_hourly_gross']) ? (float) $optionPricing['from_hourly_gross'] : null,
+            'monthly_gross' => isset($optionPricing['from_monthly_gross']) && is_numeric($optionPricing['from_monthly_gross']) ? (float) $optionPricing['from_monthly_gross'] : null,
+            'currency' => trim((string) ($optionPricing['currency'] ?? $fallbackCurrency)),
+        ];
+    }
+
+    private function normalizeHourlyMonthlyPair($hourly, $monthly, $fallbackHourly = null, $fallbackMonthly = null): array
+    {
+        $h = is_numeric($hourly) ? (float) $hourly : null;
+        $m = is_numeric($monthly) ? (float) $monthly : null;
+        if (($h === null || $h <= 0) && $m !== null && $m > 0) {
+            $h = $m / 730;
+        }
+        if (($m === null || $m <= 0) && $h !== null && $h > 0) {
+            $m = $h * 730;
+        }
+
+        if (($h === null || $h <= 0) && is_numeric($fallbackHourly)) {
+            $h = (float) $fallbackHourly;
+        }
+        if (($m === null || $m <= 0) && is_numeric($fallbackMonthly)) {
+            $m = (float) $fallbackMonthly;
+        }
+        if (($h === null || $h <= 0) && $m !== null && $m > 0) {
+            $h = $m / 730;
+        }
+        if (($m === null || $m <= 0) && $h !== null && $h > 0) {
+            $m = $h * 730;
+        }
+
+        return [
+            'hourly' => $h ?? 0.0,
+            'monthly' => $m ?? 0.0,
+        ];
+    }
+
+    private function applyMarkupPercent(float $amount, float $percent): float
+    {
+        if ($amount <= 0) {
+            return 0.0;
+        }
+        if ($percent <= 0) {
+            return $amount;
+        }
+
+        return $amount * (1 + ($percent / 100));
+    }
+
+    private function toBaseCurrencyAmount(float $amount, string $sourceCurrency): float
+    {
+        if ($amount <= 0) {
+            return 0.0;
+        }
+        $code = strtoupper(trim($sourceCurrency));
+        if ($code === '') {
+            return $amount;
+        }
+
+        try {
+            $currencyService = $this->di['mod_service']('currency');
+            return (float) $currencyService->toBaseCurrency($code, $amount);
+        } catch (\Throwable $e) {
+            return $amount;
+        }
+    }
+
+    private function getDefaultCurrencyCode(): string
+    {
+        try {
+            $currencyService = $this->di['mod_service']('currency');
+            $repo = $currencyService->getCurrencyRepository();
+            $default = $repo->findDefault();
+            if ($default && method_exists($default, 'getCode')) {
+                return strtoupper((string) $default->getCode());
+            }
+        } catch (\Throwable $e) {
+            // Keep fallback below.
+        }
+
+        return '';
     }
 
     private function normalizeOptionPricing($pricing): array

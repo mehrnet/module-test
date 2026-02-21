@@ -18,7 +18,7 @@
       <label class="form-label col-3 col-form-label">{{ 'Price markup (%)'|trans }}:</label>
       <div class="col">
         <input class="form-control" type="number" step="0.01" id="hetzner_price_markup_percent" value="{{ cfg.price_markup_percent|default('0') }}">
-        <small class="form-hint">{{ 'Used for catalog/order estimate display only. Final billing uses product/addon pricing.'|trans }}</small>
+        <small class="form-hint">{{ 'Used for catalog/order estimate and prepaid dynamic checkout pricing.'|trans }}</small>
       </div>
     </div>
 
@@ -30,7 +30,7 @@
           <option value="standard"{% if billing_mode == 'standard' %} selected{% endif %}>{{ 'Standard FossBilling pricing'|trans }}</option>
           <option value="prepaid_hours"{% if billing_mode == 'prepaid_hours' %} selected{% endif %}>{{ 'Prepaid hourly balance'|trans }}</option>
         </select>
-        <small class="form-hint">{{ 'Prepaid hourly mode uses quantity=hours, consumes balance in cron, and suspends when exhausted. Configure product pricing as one-time (unit price = 1 hour).'|trans }}</small>
+        <small class="form-hint">{{ 'Prepaid hourly mode uses quantity=hours, consumes balance in cron, and suspends when exhausted. Checkout unit pricing is calculated from Hetzner catalog rates (with optional markup).'|trans }}</small>
       </div>
     </div>
 
@@ -200,7 +200,7 @@
             <input class="form-control" type="number" min="0" step="1" id="hetzner_addon_id_firewall" value="{{ cfg.addon_id_firewall|default('') }}" placeholder="126">
           </div>
         </div>
-        <small class="form-hint">{{ 'Set product addon IDs to make option choices update real order totals. Leave empty to disable mapping.'|trans }}</small>
+        <small class="form-hint">{{ 'Set IPv4/IPv6/Backups addon IDs to split prepaid checkout into separate invoice lines (server is base line). Leave empty to keep a single combined line.'|trans }}</small>
       </div>
     </div>
 

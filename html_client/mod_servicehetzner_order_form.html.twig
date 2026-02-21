@@ -1135,7 +1135,7 @@
       syncPrepaidHoursQuantity();
       const hours = getSelectedPrepaidHours();
       if (!infra) {
-        baseLine.textContent = 'Select a server type to calculate invoice.';
+        baseLine.textContent = '';
         addonsLine.textContent = '';
         totalLine.textContent = 'Invoice: -';
         estimateLine.textContent = '';
@@ -1150,7 +1150,7 @@
       const invoiceHoursTotal = (Number(infra.hourly) || 0) * hours;
 
       const formulaPrefix = hours + ' hours * ' + formatHourlyOnlyPrice(infra.hourly, infra.currency);
-      baseLine.textContent = formulaPrefix;
+      baseLine.textContent = '';
       totalLine.textContent = 'Invoice: ' + formulaPrefix + ' = ' + formatPrice(invoiceHoursTotal, infra.currency);
 
       const detailLines = [];
