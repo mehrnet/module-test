@@ -1119,10 +1119,7 @@
     });
 
     let selectedName = '';
-    if (
-      selectedCategoryTypes.some(function(type) { return String(type.name || '') === current; })
-      && activeTypes.some(function(type) { return String(type.name || '') === current; })
-    ) {
+    if (selectedCategoryTypes.some(function(type) { return String(type.name || '') === current; })) {
       selectedName = current;
     } else if (activeTypes.length) {
       selectedName = String(activeTypes[0].name || '');
@@ -1329,13 +1326,10 @@
     const type = getSelectedType();
     const current = String(input.value || cfg.location || '').trim();
     let selectedName = '';
-    if (rows.some(function(row) { return String(row.name || '') === current && isServerAvailableInLocation(type, String(row.name || '')); })) {
+    if (rows.some(function(row) { return String(row.name || '') === current; })) {
       selectedName = current;
     } else {
-      const firstActive = rows.find(function(row) {
-        return isServerAvailableInLocation(type, String(row.name || ''));
-      });
-      selectedName = firstActive ? String(firstActive.name || '') : '';
+      selectedName = rows.length ? String(rows[0].name || '') : '';
     }
     input.value = selectedName;
 
@@ -1356,9 +1350,9 @@
       const priceText = (pair.hourly !== null || pair.monthly !== null)
         ? (formatPrice(pair.hourly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' hourly / ' + formatPrice(pair.monthly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' monthly')
         : (isAvailable ? 'Pricing unavailable' : 'Unavailable for selected server');
-      const active = isAvailable && (name === selectedName);
-      const btnClass = active
-        ? 'btn btn-primary text-start'
+      const isSelected = name === selectedName;
+      const btnClass = isSelected
+        ? (isAvailable ? 'btn btn-primary text-start' : 'btn btn-secondary text-start')
         : (isAvailable ? 'btn btn-outline-secondary text-start' : 'btn btn-outline-secondary text-start disabled opacity-50');
       cards.push(
         '<button type="button" class="' + btnClass + ' order-hetzner-location-btn" data-location="' + esc(name) + '" data-active="' + (isAvailable ? '1' : '0') + '" style="min-width: 220px;">'
@@ -1514,6 +1508,13 @@
         if (cfg.allowLocationChoice && !String(locationInput.value || '').trim()) {
           ev.preventDefault();
           FOSSBilling.message('Please select a location.', 'error');
+          return;
+        }
+        const selectedType = getSelectedType();
+        const selectedLocation = getSelectedLocationName();
+        if (cfg.allowServerTypeChoice && cfg.allowLocationChoice && selectedType && selectedLocation && !isServerAvailableInLocation(selectedType, selectedLocation)) {
+          ev.preventDefault();
+          FOSSBilling.message('Selected server type is not available in the selected location.', 'error');
         }
       });
     }
