@@ -59,9 +59,11 @@
   <div class="col-md-6">
     <label class="form-label">{{ 'Server type'|trans }}</label>
     {% if cfg.allow_server_type_choice|default('0') in ['1', 1, true] %}
-      <select class="form-select" id="order_hetzner_server_type" name="server_type" required>
-        <option value="">{{ 'Loading...'|trans }}</option>
-      </select>
+      <input type="hidden" id="order_hetzner_server_type" name="server_type" value="{{ cfg.server_type|default('') }}">
+      <div id="order_hetzner_server_type_buttons" class="d-flex flex-column gap-2">
+        <div class="small text-muted">{{ 'Loading server types...'|trans }}</div>
+      </div>
+      <small class="form-hint">{{ 'Required. Choose one server type.'|trans }}</small>
     {% else %}
       <input type="hidden" name="server_type" id="order_hetzner_server_type" value="{{ cfg.server_type|default('') }}">
       <div class="form-control" readonly>{{ cfg.server_type|default('') }}</div>
@@ -304,6 +306,56 @@
   function getFlagSvg(countryCode) {
     const code = normalizeCountryCode(countryCode);
     return FLAG_SVGS[code] || DEFAULT_FLAG_SVG;
+  }
+
+  function getServerTypeFamily(name) {
+    const value = String(name || '').trim().toLowerCase();
+    const match = value.match(/^([a-z]+)\d*$/);
+    return match ? match[1] : value;
+  }
+
+  function getServerTypeSize(name) {
+    const value = String(name || '').trim().toLowerCase();
+    const match = value.match(/[a-z]+(\d+)$/);
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  function getServerTypeCategory(name, cpuType) {
+    const family = getServerTypeFamily(name);
+    const cpu = String(cpuType || '').toLowerCase();
+    if (cpu === 'dedicated' || family === 'ccx') return 'dedicated_cpu';
+    if (family === 'cpx') return 'balanced';
+    if (family === 'cx' || family === 'cax') return 'cost_optimized';
+    return 'other';
+  }
+
+  function getServerTypeCategoryMeta(key) {
+    const map = {
+      cost_optimized: { title: 'Cost Optimized', order: 10 },
+      balanced: { title: 'Balanced', order: 20 },
+      dedicated_cpu: { title: 'Dedicated CPU', order: 30 },
+      other: { title: 'Other', order: 99 }
+    };
+    return map[key] || map.other;
+  }
+
+  function sortServerTypes(a, b) {
+    const catA = getServerTypeCategoryMeta(getServerTypeCategory(a.name, a.cpu_type || a.cpuType || ''));
+    const catB = getServerTypeCategoryMeta(getServerTypeCategory(b.name, b.cpu_type || b.cpuType || ''));
+    if (catA.order !== catB.order) return catA.order - catB.order;
+
+    const familyOrder = { cx: 10, cax: 20, cpx: 30, ccx: 40 };
+    const famA = getServerTypeFamily(a.name);
+    const famB = getServerTypeFamily(b.name);
+    const famRankA = famA in familyOrder ? familyOrder[famA] : 999;
+    const famRankB = famB in familyOrder ? familyOrder[famB] : 999;
+    if (famRankA !== famRankB) return famRankA - famRankB;
+
+    const sizeA = getServerTypeSize(a.name);
+    const sizeB = getServerTypeSize(b.name);
+    if (sizeA !== sizeB) return sizeA - sizeB;
+
+    return String(a.name || '').localeCompare(String(b.name || ''));
   }
 
   function normalizeArchitectureValue(value) {
@@ -790,17 +842,89 @@
       return;
     }
 
-    const el = document.getElementById('order_hetzner_server_type');
-    if (!el) return;
+    const input = document.getElementById('order_hetzner_server_type');
+    const wrap = document.getElementById('order_hetzner_server_type_buttons');
+    if (!input || !wrap) return;
 
-    const options = ['<option value="">Select server type</option>'];
-    (catalog.server_types || []).forEach(function(type) {
-      const name = String(type.name || '');
-      if (!name) return;
-      const selected = cfg.serverType === name ? ' selected' : '';
-      options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(name + ' | ' + (type.cores || 0) + ' vCPU | ' + (type.memory || 0) + ' GB') + '</option>');
+    const types = (catalog.server_types || []).filter(function(type) {
+      return !!String(type && type.name ? type.name : '');
+    }).sort(sortServerTypes);
+
+    if (!types.length) {
+      input.value = '';
+      wrap.innerHTML = '<div class="small text-muted">No server types available.</div>';
+      return;
+    }
+
+    const current = String(input.value || cfg.serverType || '').trim();
+    let selectedName = '';
+    if (types.some(function(type) { return String(type.name || '') === current; })) {
+      selectedName = current;
+    } else {
+      selectedName = String(types[0].name || '');
+    }
+    input.value = selectedName;
+
+    const locationName = getSelectedLocationName();
+    const grouped = {};
+    types.forEach(function(type) {
+      const categoryKey = getServerTypeCategory(type.name, type.cpu_type || type.cpuType || '');
+      if (!grouped[categoryKey]) grouped[categoryKey] = [];
+      grouped[categoryKey].push(type);
     });
-    el.innerHTML = options.join('');
+
+    const categoryKeys = Object.keys(grouped).sort(function(a, b) {
+      return getServerTypeCategoryMeta(a).order - getServerTypeCategoryMeta(b).order;
+    });
+
+    const chunks = [];
+    categoryKeys.forEach(function(key) {
+      const meta = getServerTypeCategoryMeta(key);
+      chunks.push('<div class="small fw-semibold text-muted text-uppercase mt-1">' + esc(meta.title) + '</div>');
+      chunks.push('<div class="d-flex flex-wrap gap-2">');
+
+      grouped[key].forEach(function(type) {
+        const name = String(type.name || '');
+        const isSelected = name === selectedName;
+        const btnClass = isSelected ? 'btn btn-primary text-start' : 'btn btn-outline-secondary text-start';
+        const arch = normalizeArchitectureValue(type.architecture || type.architecture_raw || '');
+        const archLabel = arch ? (' | ' + arch) : '';
+
+        let priceText = 'Pricing unavailable';
+        const row = findLocationPrice(((type.pricing || {}).location_prices || []), locationName);
+        if (row && (row.hourly_gross !== null || row.monthly_gross !== null)) {
+          const pair = normalizeRatePair(row.hourly_gross, row.monthly_gross);
+          priceText = formatPrice(pair.hourly, row.currency || type.price_currency) + ' hourly / ' + formatPrice(pair.monthly, row.currency || type.price_currency) + ' monthly';
+        } else {
+          const pair = normalizeRatePair(type.price_hourly_from, type.price_monthly_from);
+          if (pair.hourly !== null || pair.monthly !== null) {
+            priceText = 'from ' + formatPrice(pair.hourly, type.price_currency) + ' hourly / ' + formatPrice(pair.monthly, type.price_currency) + ' monthly';
+          }
+        }
+
+        chunks.push(
+          '<button type="button" class="' + btnClass + ' order-hetzner-server-type-btn" data-server-type="' + esc(name) + '" style="min-width: 260px;">'
+            + '<div class="fw-semibold">' + esc(name) + '</div>'
+            + '<div class="small">' + esc((type.cores || 0) + ' vCPU | ' + (type.memory || 0) + ' GB RAM | ' + (type.disk || 0) + ' GB Disk' + archLabel) + '</div>'
+            + '<div class="small">' + esc(priceText) + '</div>'
+          + '</button>'
+        );
+      });
+
+      chunks.push('</div>');
+    });
+
+    wrap.innerHTML = chunks.join('');
+    wrap.querySelectorAll('.order-hetzner-server-type-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const value = String(btn.getAttribute('data-server-type') || '');
+        if (!value) return;
+        input.value = value;
+        populateServerTypes();
+        input.dispatchEvent(new Event('change'));
+      });
+    });
+
     renderTypeHint();
   }
 
@@ -928,6 +1052,7 @@
   }
 
   function refreshDependent() {
+    populateServerTypes();
     populateLocations();
     renderTypeHint();
     populateImages();
@@ -943,7 +1068,6 @@
       }
 
       catalog = (result && result.catalog) ? result.catalog : { server_types: [], locations: [], images: [], firewalls: [], option_pricing: {} };
-      populateServerTypes();
       refreshDependent();
       populateFirewalls();
       renderOptionPricingHints();
@@ -976,16 +1100,23 @@
     const location = document.getElementById('order_hetzner_location');
     if (location) {
       location.addEventListener('change', function() {
+        populateServerTypes();
         renderTypeHint();
         renderOptionPricingHints();
         updateBillingSummary();
       });
     }
 
+    const serverTypeInput = document.getElementById('order_hetzner_server_type');
     const locationInput = document.getElementById('order_hetzner_location');
     const orderForm = locationInput ? locationInput.closest('form') : null;
     if (orderForm) {
       orderForm.addEventListener('submit', function(ev) {
+        if (cfg.allowServerTypeChoice && serverTypeInput && !String(serverTypeInput.value || '').trim()) {
+          ev.preventDefault();
+          FOSSBilling.message('Please select a server type.', 'error');
+          return;
+        }
         if (cfg.allowLocationChoice && !String(locationInput.value || '').trim()) {
           ev.preventDefault();
           FOSSBilling.message('Please select a location.', 'error');

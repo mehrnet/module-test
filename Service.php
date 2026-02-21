@@ -752,6 +752,7 @@ class Service
                 'cores' => (int) ($type['cores'] ?? 0),
                 'memory' => (int) ($type['memory'] ?? 0),
                 'disk' => (int) ($type['disk'] ?? 0),
+                'cpu_type' => (string) ($type['cpu_type'] ?? ''),
                 'architecture' => $this->normalizeArchitectureValue($type['architecture'] ?? ''),
                 'architecture_raw' => (string) ($type['architecture'] ?? ''),
                 'deprecated' => (bool) ($type['deprecated'] ?? false),
@@ -922,6 +923,9 @@ class Service
                         (array) ($existing['available_in_projects'] ?? []),
                         [$project['ref']]
                     )));
+                    if (trim((string) ($existing['cpu_type'] ?? '')) === '' && trim((string) ($type['cpu_type'] ?? '')) !== '') {
+                        $existing['cpu_type'] = (string) $type['cpu_type'];
+                    }
 
                     $existing['pricing'] = $this->mergeServerTypePricing(
                         is_array($existing['pricing'] ?? null) ? $existing['pricing'] : [],
