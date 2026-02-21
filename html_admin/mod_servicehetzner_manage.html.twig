@@ -1,0 +1,75 @@
+{% set order_id = order.id|default(0) %}
+
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">{{ 'Hetzner VPS service'|trans }}</h3>
+  </div>
+  <div class="card-body">
+    {% if order_id %}
+      <div class="d-flex gap-2 mb-3">
+        <button type="button" class="btn btn-secondary" onclick="adminHetznerRefresh();">{{ 'Refresh'|trans }}</button>
+        <button type="button" class="btn btn-secondary" onclick="adminHetznerAction('poweron');">{{ 'Power on'|trans }}</button>
+        <button type="button" class="btn btn-secondary" onclick="adminHetznerAction('poweroff');">{{ 'Power off'|trans }}</button>
+        <button type="button" class="btn btn-secondary" onclick="adminHetznerAction('reboot');">{{ 'Reboot'|trans }}</button>
+      </div>
+      <div id="admin-hetzner-details">{{ 'Loading...'|trans }}</div>
+    {% else %}
+      <p>{{ 'Order context missing.'|trans }}</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if order_id %}
+<script>
+const ADMIN_HETZNER_ORDER_ID = {{ order_id }};
+
+function adminEsc(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function adminRenderHetzner(data) {
+  const box = document.getElementById('admin-hetzner-details');
+  const server = data.server || null;
+
+  if (!server) {
+    box.innerHTML = '<p>Not provisioned. Status: <strong>' + adminEsc(data.provision_status || '') + '</strong></p>';
+    return;
+  }
+
+  box.innerHTML = '<p><strong>ID:</strong> <code>' + adminEsc(server.id || '') + '</code> | <strong>Name:</strong> ' + adminEsc(server.name || '') + ' | <strong>Status:</strong> ' + adminEsc(server.status || '') + '</p>';
+}
+
+function adminHetznerRefresh() {
+  API.admin.post('servicehetzner/service_get_details', { order_id: ADMIN_HETZNER_ORDER_ID }, function(result) {
+    adminRenderHetzner(result || {});
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to load service details', 'error');
+  });
+}
+
+function adminHetznerAction(action) {
+  API.admin.post('servicehetzner/service_power_action', {
+    order_id: ADMIN_HETZNER_ORDER_ID,
+    action: action
+  }, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Power action failed', 'error');
+      return;
+    }
+    FOSSBilling.message('Action queued successfully.');
+    adminHetznerRefresh();
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Power action failed', 'error');
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  adminHetznerRefresh();
+});
+</script>
+{% endif %}

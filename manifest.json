@@ -1,0 +1,12 @@
+{
+  "id": "servicehetzner",
+  "type": "mod",
+  "name": "Hetzner Cloud",
+  "description": "Hetzner Cloud VPS service manager for FossBilling with project keys, provisioning, and capacity sync",
+  "icon_url": "icon.svg",
+  "homepage_url": "https://github.com/mehrnet/fossbilling-server-hetzner",
+  "author": "Mehrnet",
+  "author_url": "https://mehrnet.com",
+  "license": "Apache 2.0 - https://www.apache.org/licenses/LICENSE-2.0",
+  "version": "0.4.0"
+}

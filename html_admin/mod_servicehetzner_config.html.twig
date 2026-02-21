@@ -1,0 +1,624 @@
+{% set cfg = product.config|default({}) %}
+
+<div class="card-body">
+  <h3>{{ 'Hetzner Cloud product mapping'|trans }}</h3>
+  <p class="text-muted">{{ 'Configure fixed defaults or allow customer choice. Provisioning uses project priority + capacity when project_ref is empty.'|trans }}</p>
+
+  <form id="servicehetzner-product-config-form">
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Project routing'|trans }}:</label>
+      <div class="col">
+        <select class="form-select" id="hetzner_project_ref" name="config[project_ref]">
+          <option value=""{% if cfg.project_ref is empty %} selected{% endif %}>{{ 'Auto by priority/capacity (recommended)'|trans }}</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Price markup (%)'|trans }}:</label>
+      <div class="col">
+        <input class="form-control" type="number" step="0.01" id="hetzner_price_markup_percent" value="{{ cfg.price_markup_percent|default('0') }}">
+        <small class="form-hint">{{ 'Used for catalog/order estimate display only. Final billing uses product/addon pricing.'|trans }}</small>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Billing mode'|trans }}:</label>
+      <div class="col">
+        {% set billing_mode = cfg.billing_mode|default('standard') %}
+        <select class="form-select" id="hetzner_billing_mode">
+          <option value="standard"{% if billing_mode == 'standard' %} selected{% endif %}>{{ 'Standard FossBilling pricing'|trans }}</option>
+          <option value="prepaid_hours"{% if billing_mode == 'prepaid_hours' %} selected{% endif %}>{{ 'Prepaid hourly balance'|trans }}</option>
+        </select>
+        <small class="form-hint">{{ 'Prepaid hourly mode uses quantity=hours, consumes balance in cron, and suspends when exhausted. Configure product pricing as one-time (unit price = 1 hour).'|trans }}</small>
+      </div>
+    </div>
+
+    <div class="mb-3 row" id="hetzner_prepaid_hours_settings">
+      <label class="form-label col-3 col-form-label">{{ 'Prepaid hours policy'|trans }}:</label>
+      <div class="col">
+        <div class="row g-2">
+          <div class="col-md-2">
+            <label class="form-label">{{ 'Default'|trans }}</label>
+            <input class="form-control" type="number" min="1" step="1" id="hetzner_prepaid_hours_default" value="{{ cfg.prepaid_hours_default|default('24') }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">{{ 'Minimum'|trans }}</label>
+            <input class="form-control" type="number" min="1" step="1" id="hetzner_prepaid_hours_min" value="{{ cfg.prepaid_hours_min|default('1') }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">{{ 'Maximum'|trans }}</label>
+            <input class="form-control" type="number" min="1" step="1" id="hetzner_prepaid_hours_max" value="{{ cfg.prepaid_hours_max|default('8760') }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">{{ 'Top-up minimum'|trans }}</label>
+            <input class="form-control" type="number" min="1" step="1" id="hetzner_topup_hours_min" value="{{ cfg.topup_hours_min|default('1') }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">{{ 'Top-up maximum'|trans }}</label>
+            <input class="form-control" type="number" min="1" step="1" id="hetzner_topup_hours_max" value="{{ cfg.topup_hours_max|default('8760') }}">
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-md-4">
+            <label class="form-label">{{ 'Hourly rate override'|trans }}</label>
+            <input class="form-control" type="number" min="0" step="0.00001" id="hetzner_hourly_rate" value="{{ cfg.hourly_rate|default('0') }}">
+            <small class="form-hint">{{ 'Optional. 0 means use order unit price.'|trans }}</small>
+          </div>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_auto_suspend_on_exhaustion" {% if cfg.auto_suspend_on_exhaustion|default('1') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_auto_suspend_on_exhaustion">{{ 'Suspend server automatically when prepaid hours are exhausted'|trans }}</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_auto_poweron_on_topup" {% if cfg.auto_poweron_on_topup|default('1') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_auto_poweron_on_topup">{{ 'Auto power-on suspended server when top-up is applied'|trans }}</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Server type policy'|trans }}:</label>
+      <div class="col">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_allow_server_type_choice" {% if cfg.allow_server_type_choice|default('0') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_allow_server_type_choice">{{ 'Allow customer to choose server type'|trans }}</label>
+        </div>
+        <select class="form-select" id="hetzner_server_type_select" name="config[server_type]"></select>
+        <small class="form-hint" id="hetzner_server_type_hint"></small>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Location policy'|trans }}:</label>
+      <div class="col">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_allow_location_choice" {% if cfg.allow_location_choice|default('0') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_allow_location_choice">{{ 'Allow customer to choose location'|trans }}</label>
+        </div>
+        <select class="form-select" id="hetzner_location" name="config[location]"></select>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Image policy'|trans }}:</label>
+      <div class="col">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_allow_image_choice" {% if cfg.allow_image_choice|default('0') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_allow_image_choice">{{ 'Allow customer to choose OS image'|trans }}</label>
+        </div>
+        <select class="form-select" id="hetzner_image_select" name="config[image]"></select>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Datacenter override'|trans }}:</label>
+      <div class="col">
+        <input class="form-control" type="text" id="hetzner_datacenter" value="{{ cfg.datacenter|default('') }}" placeholder="fsn1-dc14">
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'SSH key IDs (CSV)'|trans }}:</label>
+      <div class="col">
+        <input class="form-control" type="text" id="hetzner_ssh_keys" value="{{ cfg.ssh_keys|default('') }}" placeholder="12345,67890">
+      </div>
+    </div>
+
+    <hr>
+    <h4>{{ 'Network and backup policies'|trans }}</h4>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Public IPv4'|trans }}:</label>
+      <div class="col">
+        <select class="form-select" id="hetzner_enable_ipv4_mode">
+          {% set ipv4_mode = cfg.enable_ipv4_mode|default('force_on') %}
+          <option value="force_on"{% if ipv4_mode == 'force_on' %} selected{% endif %}>{{ 'Force enabled'|trans }}</option>
+          <option value="force_off"{% if ipv4_mode == 'force_off' %} selected{% endif %}>{{ 'Force disabled'|trans }}</option>
+          <option value="customer"{% if ipv4_mode == 'customer' %} selected{% endif %}>{{ 'Customer can choose'|trans }}</option>
+        </select>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_enable_ipv4_default" {% if cfg.enable_ipv4_default|default('1') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_enable_ipv4_default">{{ 'Default enabled when customer can choose'|trans }}</label>
+        </div>
+        <small class="form-hint" id="hetzner_ipv4_pricing_hint"></small>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Public IPv6'|trans }}:</label>
+      <div class="col">
+        <select class="form-select" id="hetzner_enable_ipv6_mode">
+          {% set ipv6_mode = cfg.enable_ipv6_mode|default('force_on') %}
+          <option value="force_on"{% if ipv6_mode == 'force_on' %} selected{% endif %}>{{ 'Force enabled'|trans }}</option>
+          <option value="force_off"{% if ipv6_mode == 'force_off' %} selected{% endif %}>{{ 'Force disabled'|trans }}</option>
+          <option value="customer"{% if ipv6_mode == 'customer' %} selected{% endif %}>{{ 'Customer can choose'|trans }}</option>
+        </select>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_enable_ipv6_default" {% if cfg.enable_ipv6_default|default('1') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_enable_ipv6_default">{{ 'Default enabled when customer can choose'|trans }}</label>
+        </div>
+        <small class="form-hint" id="hetzner_ipv6_pricing_hint"></small>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Backups'|trans }}:</label>
+      <div class="col">
+        <select class="form-select" id="hetzner_enable_backups_mode">
+          {% set backups_mode = cfg.enable_backups_mode|default('force_off') %}
+          <option value="force_on"{% if backups_mode == 'force_on' %} selected{% endif %}>{{ 'Force enabled'|trans }}</option>
+          <option value="force_off"{% if backups_mode == 'force_off' %} selected{% endif %}>{{ 'Force disabled'|trans }}</option>
+          <option value="customer"{% if backups_mode == 'customer' %} selected{% endif %}>{{ 'Customer can choose'|trans }}</option>
+        </select>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" id="hetzner_enable_backups_default" {% if cfg.enable_backups_default|default('0') in ['1', 1, true] %}checked{% endif %}>
+          <label class="form-check-label" for="hetzner_enable_backups_default">{{ 'Default enabled when customer can choose'|trans }}</label>
+        </div>
+        <small class="form-hint" id="hetzner_backups_pricing_hint"></small>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Billing addon mapping'|trans }}:</label>
+      <div class="col">
+        <div class="row g-2">
+          <div class="col-md-3">
+            <label class="form-label">{{ 'IPv4 addon ID'|trans }}</label>
+            <input class="form-control" type="number" min="0" step="1" id="hetzner_addon_id_ipv4" value="{{ cfg.addon_id_ipv4|default('') }}" placeholder="123">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">{{ 'Backups addon ID'|trans }}</label>
+            <input class="form-control" type="number" min="0" step="1" id="hetzner_addon_id_backups" value="{{ cfg.addon_id_backups|default('') }}" placeholder="124">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">{{ 'IPv6 addon ID'|trans }}</label>
+            <input class="form-control" type="number" min="0" step="1" id="hetzner_addon_id_ipv6" value="{{ cfg.addon_id_ipv6|default('') }}" placeholder="125">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">{{ 'Firewall addon ID'|trans }}</label>
+            <input class="form-control" type="number" min="0" step="1" id="hetzner_addon_id_firewall" value="{{ cfg.addon_id_firewall|default('') }}" placeholder="126">
+          </div>
+        </div>
+        <small class="form-hint">{{ 'Set product addon IDs to make option choices update real order totals. Leave empty to disable mapping.'|trans }}</small>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label">{{ 'Firewall policy'|trans }}:</label>
+      <div class="col">
+        {% set firewall_mode = cfg.firewall_mode|default('none') %}
+        <select class="form-select" id="hetzner_firewall_mode">
+          <option value="none"{% if firewall_mode == 'none' %} selected{% endif %}>{{ 'Disabled'|trans }}</option>
+          <option value="force"{% if firewall_mode == 'force' %} selected{% endif %}>{{ 'Force selected firewalls'|trans }}</option>
+          <option value="customer"{% if firewall_mode == 'customer' %} selected{% endif %}>{{ 'Customer can choose from allowed list'|trans }}</option>
+        </select>
+        <input class="form-control mt-2" type="text" id="hetzner_firewall_ids" value="{{ cfg.firewall_ids|default('') }}" placeholder="Allowed firewall IDs CSV, e.g. 123,456">
+        <input class="form-control mt-2" type="text" id="hetzner_firewall_default_ids" value="{{ cfg.firewall_default_ids|default('') }}" placeholder="Default firewall IDs CSV (optional)">
+        <small class="form-hint" id="hetzner_firewall_hint"></small>
+      </div>
+    </div>
+
+    <div class="mb-3 row">
+      <label class="form-label col-3 col-form-label pt-0">{{ 'Delete on cancel override'|trans }}:</label>
+      <div class="col">
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="radio" id="hetzner_delete_default" name="config[delete_on_cancel]" value=""{% if cfg.delete_on_cancel is not defined or cfg.delete_on_cancel == '' %} checked{% endif %}>
+          <label class="form-check-label" for="hetzner_delete_default">{{ 'Use module default'|trans }}</label>
+        </div>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="radio" id="hetzner_delete_yes" name="config[delete_on_cancel]" value="1"{% if cfg.delete_on_cancel|default('') == '1' %} checked{% endif %}>
+          <label class="form-check-label" for="hetzner_delete_yes">{{ 'Always delete server'|trans }}</label>
+        </div>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="radio" id="hetzner_delete_no" name="config[delete_on_cancel]" value="0"{% if cfg.delete_on_cancel|default('') == '0' %} checked{% endif %}>
+          <label class="form-check-label" for="hetzner_delete_no">{{ 'Never delete server'|trans }}</label>
+        </div>
+      </div>
+    </div>
+
+    <input type="hidden" id="hetzner_product_id" value="{{ product.id }}">
+    <button class="btn btn-primary w-100" type="submit">{{ 'Update'|trans }}</button>
+  </form>
+</div>
+
+<script>
+(function() {
+  const preselected = {
+    projectRef: {{ (cfg.project_ref|default(''))|json_encode|raw }},
+    serverType: {{ (cfg.server_type|default(''))|json_encode|raw }},
+    location: {{ (cfg.location|default(''))|json_encode|raw }},
+    image: {{ (cfg.image|default(''))|json_encode|raw }}
+  };
+
+  let catalog = { server_types: [], locations: [], images: [], firewalls: [], option_pricing: {} };
+
+  function esc(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatPrice(v, currency) {
+    if (v === null || v === undefined || v === '') {
+      return '-';
+    }
+    const n = Number(v);
+    if (Number.isNaN(n)) {
+      return esc(v);
+    }
+    const markup = Number((document.getElementById('hetzner_price_markup_percent') || {}).value || 0);
+    const finalValue = n * (1 + (Number.isNaN(markup) ? 0 : (markup / 100)));
+    return finalValue.toFixed(5) + ' ' + esc(currency || 'EUR');
+  }
+
+  function getSelectedLocationName() {
+    const selected = String((document.getElementById('hetzner_location') || {}).value || '').trim();
+    if (selected !== '') {
+      return selected;
+    }
+    return String(preselected.location || '').trim();
+  }
+
+  function findLocationPrice(locationPrices, locationName) {
+    if (!Array.isArray(locationPrices) || !locationPrices.length) {
+      return null;
+    }
+
+    let fallback = null;
+    locationPrices.forEach(function(row) {
+      if (!row || typeof row !== 'object') return;
+
+      const monthly = Number(row.monthly_gross);
+      const hourly = Number(row.hourly_gross);
+      const normalized = {
+        monthly_gross: Number.isNaN(monthly) ? null : monthly,
+        hourly_gross: Number.isNaN(hourly) ? null : hourly,
+        currency: String(row.currency || '')
+      };
+
+      if (!fallback) {
+        fallback = normalized;
+      }
+      if (locationName && String(row.location || '') === locationName) {
+        fallback = normalized;
+      }
+    });
+
+    return fallback;
+  }
+
+  function setHintText(id, value) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = value || '';
+    }
+  }
+
+  function renderOptionPricingHints() {
+    const optionPricing = (catalog && catalog.option_pricing) ? catalog.option_pricing : {};
+    const locationName = getSelectedLocationName();
+    const type = getSelectedType();
+    const baseCurrency = String(optionPricing.currency || (type ? (type.price_currency || 'EUR') : 'EUR'));
+
+    let ipv4Text = '';
+    const ipv4 = optionPricing.ipv4 || {};
+    const ipv4Row = findLocationPrice(ipv4.location_prices, locationName);
+    if (ipv4Row && (ipv4Row.hourly_gross !== null || ipv4Row.monthly_gross !== null)) {
+      ipv4Text = 'Hetzner estimate: ' + formatPrice(ipv4Row.hourly_gross, ipv4Row.currency || baseCurrency) + ' hourly / ' + formatPrice(ipv4Row.monthly_gross, ipv4Row.currency || baseCurrency) + ' monthly';
+    }
+
+    let ipv6Text = '';
+    const ipv6 = optionPricing.ipv6 || {};
+    const ipv6Row = findLocationPrice(ipv6.location_prices, locationName);
+    if (ipv6Row && (ipv6Row.hourly_gross !== null || ipv6Row.monthly_gross !== null)) {
+      ipv6Text = 'Hetzner estimate: ' + formatPrice(ipv6Row.hourly_gross, ipv6Row.currency || baseCurrency) + ' hourly / ' + formatPrice(ipv6Row.monthly_gross, ipv6Row.currency || baseCurrency) + ' monthly';
+    }
+
+    let backupsText = '';
+    const backupPctRaw = Number(optionPricing.backup_percentage);
+    const backupPct = Number.isNaN(backupPctRaw) ? null : backupPctRaw;
+    if (type && backupPct !== null) {
+      const typeRow = findLocationPrice(((type.pricing || {}).location_prices || []), locationName);
+      if (typeRow && (typeRow.hourly_gross !== null || typeRow.monthly_gross !== null)) {
+        const backupHourly = typeRow.hourly_gross === null ? null : (typeRow.hourly_gross * (backupPct / 100));
+        const backupMonthly = typeRow.monthly_gross === null ? null : (typeRow.monthly_gross * (backupPct / 100));
+        backupsText = 'Hetzner estimate: +' + formatPrice(backupHourly, typeRow.currency || baseCurrency) + ' hourly / ' + formatPrice(backupMonthly, typeRow.currency || baseCurrency) + ' monthly (' + backupPct + '%)';
+      }
+    }
+
+    setHintText('hetzner_ipv4_pricing_hint', ipv4Text);
+    setHintText('hetzner_ipv6_pricing_hint', ipv6Text);
+    setHintText('hetzner_backups_pricing_hint', backupsText);
+  }
+
+  function getSelectedType() {
+    const selected = document.getElementById('hetzner_server_type_select').value;
+    return (catalog.server_types || []).find(function(type) {
+      return String(type.name || '') === String(selected || '');
+    }) || null;
+  }
+
+  function renderTypeHint() {
+    const type = getSelectedType();
+    const hint = document.getElementById('hetzner_server_type_hint');
+    if (!type) {
+      hint.textContent = '';
+      return;
+    }
+
+    const hourly = formatPrice(type.price_hourly_from, type.price_currency || 'EUR');
+    const monthly = formatPrice(type.price_monthly_from, type.price_currency || 'EUR');
+    const locationsCount = Array.isArray(type.available_locations) ? type.available_locations.length : 0;
+    hint.innerHTML = 'Price from ' + hourly + ' / ' + monthly + ' | Available in ' + locationsCount + ' location(s).';
+  }
+
+  function populateProjectList(list) {
+    const select = document.getElementById('hetzner_project_ref');
+    const options = ['<option value=""' + (!preselected.projectRef ? ' selected' : '') + '>Auto by priority/capacity (recommended)</option>'];
+    (list || []).forEach(function(project) {
+      const ref = String(project.ref || '');
+      if (!ref) {
+        return;
+      }
+      const selected = preselected.projectRef === ref ? ' selected' : '';
+      options.push('<option value="' + esc(ref) + '"' + selected + '>' + esc(ref + ' (priority ' + (project.priority != null ? project.priority : 100) + ')') + '</option>');
+    });
+    select.innerHTML = options.join('');
+  }
+
+  function populateServerTypes() {
+    const select = document.getElementById('hetzner_server_type_select');
+    const allowChoice = document.getElementById('hetzner_allow_server_type_choice').checked;
+    const opts = [];
+
+    if (allowChoice) {
+      opts.push('<option value="">Customer chooses at order time</option>');
+    }
+
+    (catalog.server_types || []).forEach(function(type) {
+      const name = String(type.name || '');
+      if (!name) {
+        return;
+      }
+      const selected = preselected.serverType === name ? ' selected' : '';
+      const label = name + ' | ' + (type.cores || 0) + ' vCPU | ' + (type.memory || 0) + ' GB';
+      opts.push('<option value="' + esc(name) + '"' + selected + '>' + esc(label) + '</option>');
+    });
+
+    if (preselected.serverType && !(catalog.server_types || []).some(function(type) { return String(type.name || '') === preselected.serverType; })) {
+      opts.push('<option value="' + esc(preselected.serverType) + '" selected>' + esc(preselected.serverType + ' (saved)') + '</option>');
+    }
+
+    select.innerHTML = opts.join('');
+    renderTypeHint();
+  }
+
+  function populateLocationsForType() {
+    const type = getSelectedType();
+    const select = document.getElementById('hetzner_location');
+    const allowChoice = document.getElementById('hetzner_allow_location_choice').checked;
+
+    let allowedNames = [];
+    if (type && Array.isArray(type.available_locations) && type.available_locations.length) {
+      allowedNames = type.available_locations.map(String);
+    } else {
+      allowedNames = (catalog.locations || []).map(function(loc) { return String(loc.name || ''); }).filter(Boolean);
+    }
+
+    const options = [];
+    if (allowChoice) {
+      options.push('<option value="">Customer chooses at order time</option>');
+    } else {
+      options.push('<option value="">Any location</option>');
+    }
+
+    (catalog.locations || []).forEach(function(location) {
+      const name = String(location.name || '');
+      if (!name || (allowedNames.length && allowedNames.indexOf(name) === -1)) {
+        return;
+      }
+      const selected = preselected.location === name ? ' selected' : '';
+      options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(name + (location.city ? ' (' + location.city + ')' : '')) + '</option>');
+    });
+
+    if (preselected.location && options.every(function(op) { return op.indexOf('value="' + preselected.location + '"') === -1; })) {
+      options.push('<option value="' + esc(preselected.location) + '" selected>' + esc(preselected.location + ' (saved)') + '</option>');
+    }
+
+    select.innerHTML = options.join('');
+  }
+
+  function populateImagesForType() {
+    const type = getSelectedType();
+    const select = document.getElementById('hetzner_image_select');
+    const allowChoice = document.getElementById('hetzner_allow_image_choice').checked;
+
+    const requiredArch = type && type.architecture ? String(type.architecture) : '';
+
+    const options = [];
+    if (allowChoice) {
+      options.push('<option value="">Customer chooses at order time</option>');
+    }
+
+    (catalog.images || []).forEach(function(image) {
+      const name = String(image.name || '');
+      if (!name) {
+        return;
+      }
+      const arch = String(image.architecture || '');
+      if (requiredArch && arch && arch !== requiredArch) {
+        return;
+      }
+
+      const selected = preselected.image === name ? ' selected' : '';
+      const label = name + (image.description ? ' | ' + image.description : '');
+      options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(label) + '</option>');
+    });
+
+    if (preselected.image && options.every(function(op) { return op.indexOf('value="' + preselected.image + '"') === -1; })) {
+      options.push('<option value="' + esc(preselected.image) + '" selected>' + esc(preselected.image + ' (saved)') + '</option>');
+    }
+
+    select.innerHTML = options.join('');
+  }
+
+  function renderFirewallHint() {
+    const hint = document.getElementById('hetzner_firewall_hint');
+    const names = (catalog.firewalls || []).map(function(fw) {
+      return String(fw.id || '') + ':' + String(fw.name || '');
+    }).filter(Boolean);
+    hint.textContent = names.length ? ('Available firewalls: ' + names.join(', ')) : 'No firewalls found in synced catalog.';
+  }
+
+  function refreshDependentFields() {
+    populateLocationsForType();
+    populateImagesForType();
+    renderTypeHint();
+    renderOptionPricingHints();
+  }
+
+  function refreshBillingModeFields() {
+    const mode = String((document.getElementById('hetzner_billing_mode') || {}).value || 'standard');
+    const box = document.getElementById('hetzner_prepaid_hours_settings');
+    if (box) {
+      box.style.display = mode === 'prepaid_hours' ? '' : 'none';
+    }
+  }
+
+  function loadSources() {
+    API.admin.post('servicehetzner/project_get_list', {}, function(result) {
+      populateProjectList((result && result.list) ? result.list : []);
+    });
+
+    API.admin.post('servicehetzner/catalog_global_get', { refresh: '0' }, function(result) {
+      if (result && result.ok === false) {
+        FOSSBilling.message(result.message || 'Failed to load global Hetzner catalog', 'error');
+        return;
+      }
+      catalog = (result && result.catalog) ? result.catalog : { server_types: [], locations: [], images: [], firewalls: [], option_pricing: {} };
+      populateServerTypes();
+      refreshDependentFields();
+      renderFirewallHint();
+      renderOptionPricingHints();
+    }, function(result) {
+      FOSSBilling.message((result && result.message) || 'Failed to load global Hetzner catalog', 'error');
+    });
+  }
+
+  function submitProductConfig(event) {
+    event.preventDefault();
+
+    const payload = {
+      id: document.getElementById('hetzner_product_id').value,
+      config: {
+        project_ref: document.getElementById('hetzner_project_ref').value || '',
+        price_markup_percent: document.getElementById('hetzner_price_markup_percent').value || '0',
+        billing_mode: document.getElementById('hetzner_billing_mode').value || 'standard',
+        prepaid_hours_default: document.getElementById('hetzner_prepaid_hours_default').value || '24',
+        prepaid_hours_min: document.getElementById('hetzner_prepaid_hours_min').value || '1',
+        prepaid_hours_max: document.getElementById('hetzner_prepaid_hours_max').value || '8760',
+        topup_hours_min: document.getElementById('hetzner_topup_hours_min').value || '1',
+        topup_hours_max: document.getElementById('hetzner_topup_hours_max').value || '8760',
+        hourly_rate: document.getElementById('hetzner_hourly_rate').value || '0',
+        auto_suspend_on_exhaustion: document.getElementById('hetzner_auto_suspend_on_exhaustion').checked ? '1' : '0',
+        auto_poweron_on_topup: document.getElementById('hetzner_auto_poweron_on_topup').checked ? '1' : '0',
+        allow_server_type_choice: document.getElementById('hetzner_allow_server_type_choice').checked ? '1' : '0',
+        server_type: document.getElementById('hetzner_server_type_select').value || '',
+        allow_location_choice: document.getElementById('hetzner_allow_location_choice').checked ? '1' : '0',
+        location: document.getElementById('hetzner_location').value || '',
+        allow_image_choice: document.getElementById('hetzner_allow_image_choice').checked ? '1' : '0',
+        image: document.getElementById('hetzner_image_select').value || '',
+        datacenter: document.getElementById('hetzner_datacenter').value || '',
+        ssh_keys: document.getElementById('hetzner_ssh_keys').value || '',
+        enable_ipv4_mode: document.getElementById('hetzner_enable_ipv4_mode').value,
+        enable_ipv4_default: document.getElementById('hetzner_enable_ipv4_default').checked ? '1' : '0',
+        enable_ipv6_mode: document.getElementById('hetzner_enable_ipv6_mode').value,
+        enable_ipv6_default: document.getElementById('hetzner_enable_ipv6_default').checked ? '1' : '0',
+        enable_backups_mode: document.getElementById('hetzner_enable_backups_mode').value,
+        enable_backups_default: document.getElementById('hetzner_enable_backups_default').checked ? '1' : '0',
+        addon_id_ipv4: document.getElementById('hetzner_addon_id_ipv4').value || '',
+        addon_id_backups: document.getElementById('hetzner_addon_id_backups').value || '',
+        addon_id_ipv6: document.getElementById('hetzner_addon_id_ipv6').value || '',
+        addon_id_firewall: document.getElementById('hetzner_addon_id_firewall').value || '',
+        firewall_mode: document.getElementById('hetzner_firewall_mode').value,
+        firewall_ids: document.getElementById('hetzner_firewall_ids').value || '',
+        firewall_default_ids: document.getElementById('hetzner_firewall_default_ids').value || '',
+        delete_on_cancel: (document.querySelector('input[name="config[delete_on_cancel]"]:checked') || {}).value || ''
+      }
+    };
+
+    API.admin.post('product/update_config', payload, function(result) {
+      if (result && result.ok === false) {
+        FOSSBilling.message(result.message || 'Failed to update Hetzner product configuration', 'error');
+        return;
+      }
+      FOSSBilling.message('Hetzner product configuration updated.');
+    }, function(result) {
+      FOSSBilling.message((result && result.message) || 'Failed to update Hetzner product configuration', 'error');
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    loadSources();
+    refreshBillingModeFields();
+    const form = document.getElementById('servicehetzner-product-config-form');
+    if (form) {
+      form.addEventListener('submit', submitProductConfig);
+    }
+
+    const billingMode = document.getElementById('hetzner_billing_mode');
+    if (billingMode) {
+      billingMode.addEventListener('change', refreshBillingModeFields);
+    }
+
+    const typeSelect = document.getElementById('hetzner_server_type_select');
+    if (typeSelect) {
+      typeSelect.addEventListener('change', refreshDependentFields);
+    }
+
+    ['hetzner_allow_location_choice', 'hetzner_allow_image_choice'].forEach(function(id) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('change', refreshDependentFields);
+      }
+    });
+
+    const locationSelect = document.getElementById('hetzner_location');
+    if (locationSelect) {
+      locationSelect.addEventListener('change', renderOptionPricingHints);
+    }
+
+    const markupInput = document.getElementById('hetzner_price_markup_percent');
+    if (markupInput) {
+      markupInput.addEventListener('input', function() {
+        renderTypeHint();
+        renderOptionPricingHints();
+      });
+    }
+  });
+})();
+</script>

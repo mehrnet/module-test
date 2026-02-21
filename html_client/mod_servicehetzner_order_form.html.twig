@@ -1,0 +1,983 @@
+{% set cfg = product.config|default({}) %}
+
+<h5 class="mb-2">{{ product.title }}</h5>
+<p class="text-muted mb-3">{{ 'Configure your Hetzner VPS options before adding to cart.'|trans }}</p>
+
+{% set billing_mode = cfg.billing_mode|default('standard') %}
+
+{% if product.pricing is defined %}
+  <div class="mb-3">
+    <label class="form-label">{{ 'Billing'|trans }}</label>
+    {% if billing_mode == 'prepaid_hours' %}
+      {% set default_hours = cfg.prepaid_hours_default|default('24') %}
+      {% set min_hours = cfg.prepaid_hours_min|default('1') %}
+      {% set max_hours = cfg.prepaid_hours_max|default('8760') %}
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label">{{ 'Prepaid hours'|trans }}</label>
+          <input class="form-control" type="number" min="{{ min_hours }}" max="{{ max_hours }}" step="1" id="order_hetzner_prepaid_hours" name="prepaid_hours" value="{{ default_hours }}">
+          <small class="form-hint">{{ 'Any partial usage is billed as a full hour. Use one-time product pricing where unit price equals one hour.'|trans }}</small>
+        </div>
+      </div>
+      <input type="hidden" name="quantity" id="order_hetzner_quantity" value="{{ default_hours }}">
+    {% else %}
+      {% if product.pricing.type == 'recurrent' %}
+        {% set periods = guest.system_periods %}
+        <select class="form-select" name="period" id="order_hetzner_period" required>
+          {% for code, prices in product.pricing.recurrent %}
+            {% if prices.enabled %}
+              <option value="{{ code }}" data-bb-price="{{ prices.price|money_convert }}">{{ prices.price|money_convert }}{% if prices.setup != '0.00' %} + {{ prices.setup|money_convert }} {{ 'setup'|trans }}{% endif %} ({{ periods[code] }})</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      {% elseif product.pricing.type == 'once' %}
+        <div class="form-control" readonly>{{ (product.pricing.once.price + product.pricing.once.setup)|money_convert }}</div>
+      {% else %}
+        <div class="form-control" readonly>{{ 0|money_convert }}</div>
+      {% endif %}
+    {% endif %}
+    {% if billing_mode == 'prepaid_hours' %}
+      <small class="form-hint">{{ 'Prepaid estimate is calculated as hours × (server + IPv4 + IPv6 + backups) using Hetzner catalog rates and configured markup.'|trans }}</small>
+    {% else %}
+      <small class="form-hint">{{ 'Order totals are calculated from your FossBilling product and addon prices.'|trans }}</small>
+    {% endif %}
+    <div class="mt-2">
+      <div class="small text-muted" id="order_hetzner_billing_base_line"></div>
+      <div class="small text-muted" id="order_hetzner_billing_addons_line"></div>
+      <div class="small fw-semibold" id="order_hetzner_billing_total_line"></div>
+      <div class="small text-muted" id="order_hetzner_billing_estimate_line"></div>
+    </div>
+  </div>
+{% endif %}
+
+<input type="hidden" name="project_ref" value="{{ cfg.project_ref|default('') }}">
+<input type="hidden" name="datacenter" value="{{ cfg.datacenter|default('') }}">
+<input type="hidden" name="ssh_keys" value="{{ cfg.ssh_keys|default('') }}">
+<input type="hidden" name="billing_mode" value="{{ billing_mode }}">
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <label class="form-label">{{ 'Server type'|trans }}</label>
+    {% if cfg.allow_server_type_choice|default('0') in ['1', 1, true] %}
+      <select class="form-select" id="order_hetzner_server_type" name="server_type" required>
+        <option value="">{{ 'Loading...'|trans }}</option>
+      </select>
+    {% else %}
+      <input type="hidden" name="server_type" id="order_hetzner_server_type" value="{{ cfg.server_type|default('') }}">
+      <div class="form-control" readonly>{{ cfg.server_type|default('') }}</div>
+    {% endif %}
+    <small class="form-hint" id="order_hetzner_type_hint"></small>
+  </div>
+
+  <div class="col-md-6">
+    <label class="form-label">{{ 'Location'|trans }}</label>
+    {% if cfg.allow_location_choice|default('0') in ['1', 1, true] %}
+      <input type="hidden" id="order_hetzner_location" name="location" value="{{ cfg.location|default('') }}">
+      <div id="order_hetzner_location_buttons" class="d-flex flex-wrap gap-2">
+        <div class="small text-muted">{{ 'Loading locations...'|trans }}</div>
+      </div>
+      <small class="form-hint">{{ 'Required. Choose one location.'|trans }}</small>
+    {% else %}
+      <input type="hidden" name="location" id="order_hetzner_location" value="{{ cfg.location|default('') }}">
+      <div class="form-control" readonly>{{ cfg.location|default('Any') }}</div>
+    {% endif %}
+  </div>
+
+  <div class="col-md-6">
+    <label class="form-label">{{ 'OS image'|trans }}</label>
+    {% if cfg.allow_image_choice|default('0') in ['1', 1, true] %}
+      <select class="form-select" id="order_hetzner_image" name="image" required>
+        <option value="">{{ 'Loading...'|trans }}</option>
+      </select>
+    {% else %}
+      <input type="hidden" name="image" id="order_hetzner_image" value="{{ cfg.image|default('ubuntu-24.04') }}">
+      <div class="form-control" readonly>{{ cfg.image|default('ubuntu-24.04') }}</div>
+    {% endif %}
+  </div>
+
+  {% set ipv4_mode = cfg.enable_ipv4_mode|default('force_on') %}
+  <div class="col-md-6">
+    <label class="form-label">{{ 'Public IPv4'|trans }}</label>
+    {% if ipv4_mode == 'customer' %}
+      <select class="form-select" name="enable_ipv4" id="order_hetzner_ipv4">
+        <option value="1"{% if cfg.enable_ipv4_default|default('1') in ['1', 1, true] %} selected{% endif %}>{{ 'Enabled'|trans }}</option>
+        <option value="0"{% if cfg.enable_ipv4_default|default('1') in ['0', 0, false] %} selected{% endif %}>{{ 'Disabled'|trans }}</option>
+      </select>
+    {% else %}
+      <input type="hidden" name="enable_ipv4" id="order_hetzner_ipv4" value="{% if ipv4_mode == 'force_off' %}0{% else %}1{% endif %}">
+      <div class="form-control" readonly>{% if ipv4_mode == 'force_off' %}{{ 'Disabled (forced)'|trans }}{% else %}{{ 'Enabled (forced)'|trans }}{% endif %}</div>
+    {% endif %}
+    <small class="form-hint" id="order_hetzner_ipv4_price_hint"></small>
+  </div>
+
+  {% set ipv6_mode = cfg.enable_ipv6_mode|default('force_on') %}
+  <div class="col-md-6">
+    <label class="form-label">{{ 'Public IPv6'|trans }}</label>
+    {% if ipv6_mode == 'customer' %}
+      <select class="form-select" name="enable_ipv6" id="order_hetzner_ipv6">
+        <option value="1"{% if cfg.enable_ipv6_default|default('1') in ['1', 1, true] %} selected{% endif %}>{{ 'Enabled'|trans }}</option>
+        <option value="0"{% if cfg.enable_ipv6_default|default('1') in ['0', 0, false] %} selected{% endif %}>{{ 'Disabled'|trans }}</option>
+      </select>
+    {% else %}
+      <input type="hidden" name="enable_ipv6" id="order_hetzner_ipv6" value="{% if ipv6_mode == 'force_off' %}0{% else %}1{% endif %}">
+      <div class="form-control" readonly>{% if ipv6_mode == 'force_off' %}{{ 'Disabled (forced)'|trans }}{% else %}{{ 'Enabled (forced)'|trans }}{% endif %}</div>
+    {% endif %}
+    <small class="form-hint" id="order_hetzner_ipv6_price_hint"></small>
+  </div>
+
+  {% set backups_mode = cfg.enable_backups_mode|default('force_off') %}
+  <div class="col-md-6">
+    <label class="form-label">{{ 'Backups'|trans }}</label>
+    {% if backups_mode == 'customer' %}
+      <select class="form-select" name="enable_backups" id="order_hetzner_backups">
+        <option value="1"{% if cfg.enable_backups_default|default('0') in ['1', 1, true] %} selected{% endif %}>{{ 'Enabled'|trans }}</option>
+        <option value="0"{% if cfg.enable_backups_default|default('0') in ['0', 0, false] %} selected{% endif %}>{{ 'Disabled'|trans }}</option>
+      </select>
+    {% else %}
+      <input type="hidden" name="enable_backups" id="order_hetzner_backups" value="{% if backups_mode == 'force_on' %}1{% else %}0{% endif %}">
+      <div class="form-control" readonly>{% if backups_mode == 'force_on' %}{{ 'Enabled (forced)'|trans }}{% else %}{{ 'Disabled (forced)'|trans }}{% endif %}</div>
+    {% endif %}
+    <small class="form-hint" id="order_hetzner_backups_price_hint"></small>
+  </div>
+
+  {% set firewall_mode = cfg.firewall_mode|default('none') %}
+  {% if firewall_mode in ['force', 'customer'] %}
+    <div class="col-md-12">
+      <label class="form-label">{{ 'Firewall IDs'|trans }}</label>
+      {% if firewall_mode == 'customer' %}
+        <select class="form-select" id="order_hetzner_firewall_ids" name="firewall_ids[]" multiple></select>
+        <small class="form-hint">{{ 'Hold Ctrl/Cmd to select multiple firewalls.'|trans }}</small>
+      {% else %}
+        <input type="hidden" id="order_hetzner_firewall_ids_fixed" name="firewall_ids" value="{{ cfg.firewall_default_ids|default(cfg.firewall_ids|default('')) }}">
+        <div class="form-control" readonly>{{ cfg.firewall_default_ids|default(cfg.firewall_ids|default('none')) }}</div>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+
+<script>
+(function() {
+  const cfg = {
+    allowServerTypeChoice: {{ (cfg.allow_server_type_choice|default('0') in ['1', 1, true]) ? 'true' : 'false' }},
+    allowLocationChoice: {{ (cfg.allow_location_choice|default('0') in ['1', 1, true]) ? 'true' : 'false' }},
+    allowImageChoice: {{ (cfg.allow_image_choice|default('0') in ['1', 1, true]) ? 'true' : 'false' }},
+    serverType: {{ (cfg.server_type|default(''))|json_encode|raw }},
+    location: {{ (cfg.location|default(''))|json_encode|raw }},
+    image: {{ (cfg.image|default('ubuntu-24.04'))|json_encode|raw }},
+    firewallMode: {{ (cfg.firewall_mode|default('none'))|json_encode|raw }},
+    firewallIds: {{ (cfg.firewall_ids|default(''))|json_encode|raw }},
+    firewallDefaultIds: {{ (cfg.firewall_default_ids|default(''))|json_encode|raw }},
+    billingMode: {{ (cfg.billing_mode|default('standard'))|json_encode|raw }},
+    prepaidHoursDefault: Number({{ (cfg.prepaid_hours_default|default('24'))|json_encode|raw }}) || 24,
+    prepaidHoursMin: Number({{ (cfg.prepaid_hours_min|default('1'))|json_encode|raw }}) || 1,
+    prepaidHoursMax: Number({{ (cfg.prepaid_hours_max|default('8760'))|json_encode|raw }}) || 8760,
+    topupHoursMin: Number({{ (cfg.topup_hours_min|default('1'))|json_encode|raw }}) || 1,
+    topupHoursMax: Number({{ (cfg.topup_hours_max|default('8760'))|json_encode|raw }}) || 8760,
+    hourlyRateOverride: Number({{ (cfg.hourly_rate|default('0'))|json_encode|raw }}) || 0,
+    autoSuspendOnExhaustion: {{ (cfg.auto_suspend_on_exhaustion|default('1') in ['1', 1, true]) ? 'true' : 'false' }},
+    autoPoweronOnTopup: {{ (cfg.auto_poweron_on_topup|default('1') in ['1', 1, true]) ? 'true' : 'false' }},
+    addonIpv4Id: Number({{ (cfg.addon_id_ipv4|default('0'))|json_encode|raw }}) || 0,
+    addonBackupsId: Number({{ (cfg.addon_id_backups|default('0'))|json_encode|raw }}) || 0,
+    addonIpv6Id: Number({{ (cfg.addon_id_ipv6|default('0'))|json_encode|raw }}) || 0,
+    addonFirewallId: Number({{ (cfg.addon_id_firewall|default('0'))|json_encode|raw }}) || 0,
+    priceMarkupPercent: Number({{ (cfg.price_markup_percent|default('0'))|json_encode|raw }}) || 0
+  };
+
+  const billing = {
+    product: {
+      type: {{ (product.pricing.type|default('free'))|json_encode|raw }},
+      once: {
+        price: Number({{ (product.pricing.once.price|default('0'))|json_encode|raw }}) || 0,
+        setup: Number({{ (product.pricing.once.setup|default('0'))|json_encode|raw }}) || 0,
+        priceLabel: {{ (product.pricing.once.price|default('0')|money_convert)|json_encode|raw }},
+        setupLabel: {{ (product.pricing.once.setup|default('0')|money_convert)|json_encode|raw }}
+      },
+      recurrent: {
+{% for code, prices in product.pricing.recurrent|default({}) %}
+        {{ (code ~ '')|json_encode|raw }}: {
+          price: Number({{ (prices.price|default('0'))|json_encode|raw }}) || 0,
+          setup: Number({{ (prices.setup|default('0'))|json_encode|raw }}) || 0,
+          priceLabel: {{ (prices.price|default('0')|money_convert)|json_encode|raw }},
+          setupLabel: {{ (prices.setup|default('0')|money_convert)|json_encode|raw }}
+        },
+{% endfor %}
+      }
+    },
+    addons: {
+{% for addon in product.addons|default([]) %}
+      {{ (addon.id ~ '')|json_encode|raw }}: {
+        id: Number({{ (addon.id ~ '')|json_encode|raw }}) || 0,
+        title: {{ (addon.title|default('Addon'))|json_encode|raw }},
+        type: {{ (addon.pricing.type|default('free'))|json_encode|raw }},
+        once: {
+          price: Number({{ (addon.pricing.once.price|default('0'))|json_encode|raw }}) || 0,
+          setup: Number({{ (addon.pricing.once.setup|default('0'))|json_encode|raw }}) || 0,
+          priceLabel: {{ (addon.pricing.once.price|default('0')|money_convert)|json_encode|raw }},
+          setupLabel: {{ (addon.pricing.once.setup|default('0')|money_convert)|json_encode|raw }}
+        },
+        recurrent: {
+{% for code, prices in addon.pricing.recurrent|default({}) %}
+          {{ (code ~ '')|json_encode|raw }}: {
+            price: Number({{ (prices.price|default('0'))|json_encode|raw }}) || 0,
+            setup: Number({{ (prices.setup|default('0'))|json_encode|raw }}) || 0,
+            priceLabel: {{ (prices.price|default('0')|money_convert)|json_encode|raw }},
+            setupLabel: {{ (prices.setup|default('0')|money_convert)|json_encode|raw }}
+          },
+{% endfor %}
+        }
+      },
+{% endfor %}
+    }
+  };
+
+  let catalog = { server_types: [], locations: [], images: [], firewalls: [], option_pricing: {} };
+  let billingCurrencyCode = '';
+
+  function esc(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatPrice(v, currency) {
+    if (v === null || v === undefined || v === '') {
+      return '-';
+    }
+    const n = Number(v);
+    if (Number.isNaN(n)) {
+      return esc(v);
+    }
+    const marked = n * (1 + (cfg.priceMarkupPercent / 100));
+    return marked.toFixed(5) + ' ' + esc(currency || 'EUR');
+  }
+
+  function toNumberOrNull(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  function normalizeRatePair(hourlyValue, monthlyValue) {
+    let hourly = toNumberOrNull(hourlyValue);
+    let monthly = toNumberOrNull(monthlyValue);
+
+    if ((hourly === null || hourly <= 0) && monthly !== null && monthly > 0) {
+      hourly = monthly / 730;
+    }
+    if ((monthly === null || monthly <= 0) && hourly !== null && hourly > 0) {
+      monthly = hourly * 730;
+    }
+
+    return { hourly: hourly, monthly: monthly };
+  }
+
+  function parseIdList(value) {
+    if (!value) return [];
+    return String(value).split(',').map(function(v) { return parseInt(v.trim(), 10); }).filter(function(v) { return Number.isInteger(v) && v > 0; });
+  }
+
+  function parseBooleanValue(value, defaultValue) {
+    if (value === null || value === undefined || value === '') {
+      return !!defaultValue;
+    }
+    return ['1', 'true', 'yes', 'on'].indexOf(String(value).toLowerCase()) !== -1;
+  }
+
+  function getSelectedLocationName() {
+    const el = document.getElementById('order_hetzner_location');
+    if (el) {
+      const raw = String(el.value || '').trim();
+      if (raw !== '') return raw;
+    }
+    const fixed = String(cfg.location || '').trim();
+    return fixed;
+  }
+
+  function findLocationPrice(locationPrices, locationName) {
+    if (!Array.isArray(locationPrices) || !locationPrices.length) return null;
+
+    let fallback = null;
+    locationPrices.forEach(function(row) {
+      if (!row || typeof row !== 'object') return;
+
+      const monthly = Number(row.monthly_gross);
+      const hourly = Number(row.hourly_gross);
+      const normalized = {
+        monthly_gross: Number.isNaN(monthly) ? null : monthly,
+        hourly_gross: Number.isNaN(hourly) ? null : hourly,
+        currency: String(row.currency || '')
+      };
+
+      if (!fallback) {
+        fallback = normalized;
+      }
+      if (locationName && String(row.location || '') === locationName) {
+        fallback = normalized;
+      }
+    });
+
+    return fallback;
+  }
+
+  function resolveOptionPrice(optionData, locationName, fallbackCurrency) {
+    const row = findLocationPrice((optionData || {}).location_prices, locationName);
+    if (row && (row.hourly_gross !== null || row.monthly_gross !== null)) {
+      const pair = normalizeRatePair(row.hourly_gross, row.monthly_gross);
+      if (pair.hourly !== null || pair.monthly !== null) {
+        return {
+          hourly_gross: pair.hourly,
+          monthly_gross: pair.monthly,
+          currency: String(row.currency || (optionData || {}).currency || fallbackCurrency || '')
+        };
+      }
+    }
+
+    const pair = normalizeRatePair((optionData || {}).from_hourly_gross, (optionData || {}).from_monthly_gross);
+    if (pair.hourly === null && pair.monthly === null) {
+      return null;
+    }
+
+    return {
+      hourly_gross: pair.hourly,
+      monthly_gross: pair.monthly,
+      currency: String((optionData || {}).currency || fallbackCurrency || '')
+    };
+  }
+
+  function formatEstimatePair(hourly, monthly, currency) {
+    return formatPrice(hourly, currency) + ' hourly / ' + formatPrice(monthly, currency) + ' monthly';
+  }
+
+  function setHintText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text || '';
+  }
+
+  function formatCurrencyAmount(amount) {
+    const value = Number(amount);
+    if (Number.isNaN(value)) {
+      return '0.00';
+    }
+    if (billingCurrencyCode) {
+      try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: billingCurrencyCode }).format(value);
+      } catch (e) {
+        // Ignore invalid currency and fall through to fixed precision formatting.
+      }
+    }
+    return value.toFixed(2);
+  }
+
+  function getSelectedPeriodCode() {
+    const el = document.getElementById('order_hetzner_period');
+    return el ? String(el.value || '') : '';
+  }
+
+  function getFirstKey(obj) {
+    if (!obj || typeof obj !== 'object') return '';
+    const keys = Object.keys(obj);
+    return keys.length ? keys[0] : '';
+  }
+
+  function getChargeForProductPeriod(periodCode) {
+    const type = String((billing.product || {}).type || 'free');
+    if (type === 'once') {
+      return billing.product.once || { price: 0, setup: 0, priceLabel: '0', setupLabel: '0' };
+    }
+    if (type !== 'recurrent') {
+      return { price: 0, setup: 0, priceLabel: '0', setupLabel: '0' };
+    }
+
+    const recurrent = (billing.product || {}).recurrent || {};
+    const code = periodCode || getFirstKey(recurrent);
+    return recurrent[code] || { price: 0, setup: 0, priceLabel: '0', setupLabel: '0' };
+  }
+
+  function getAddonConfig(addonId) {
+    const key = String(addonId || '');
+    return (billing.addons || {})[key] || null;
+  }
+
+  function isAddonSelected(addonId) {
+    const id = Number(addonId || 0);
+    if (!id) return false;
+    const checked = document.querySelector('input[name="addons[' + id + '][selected]"]:checked');
+    if (!checked) return false;
+    return String(checked.value || '0') === '1';
+  }
+
+  function getAddonCharge(addonId, productPeriod) {
+    const addon = getAddonConfig(addonId);
+    if (!addon) return { title: '', price: 0, setup: 0, priceLabel: '0', setupLabel: '0', period: '' };
+
+    const type = String(addon.type || 'free');
+    if (type === 'once') {
+      return Object.assign({ title: addon.title || 'Addon', period: '' }, addon.once || {});
+    }
+    if (type !== 'recurrent') {
+      return { title: addon.title || 'Addon', price: 0, setup: 0, priceLabel: '0', setupLabel: '0', period: '' };
+    }
+
+    const periodSelect = document.querySelector('select[name="addons[' + Number(addonId) + '][period]"]');
+    const chosen = String((periodSelect && periodSelect.value) ? periodSelect.value : (productPeriod || ''));
+    const recurrent = addon.recurrent || {};
+    const charge = recurrent[chosen] || recurrent[getFirstKey(recurrent)] || { price: 0, setup: 0, priceLabel: '0', setupLabel: '0' };
+    return Object.assign({ title: addon.title || 'Addon', period: chosen }, charge);
+  }
+
+  function formatChargeInline(charge) {
+    const priceLabel = String(charge.priceLabel || '');
+    const setupLabel = String(charge.setupLabel || '');
+    const setupRaw = Number(charge.setup || 0);
+    if (setupLabel && !Number.isNaN(setupRaw) && Math.abs(setupRaw) > 0.0000001) {
+      return priceLabel + ' + ' + setupLabel + ' setup';
+    }
+    return priceLabel || formatCurrencyAmount(Number(charge.price || 0));
+  }
+
+  function parseBooleanInput(id, fallbackValue) {
+    const el = document.getElementById(id);
+    const val = el ? el.value : '';
+    return parseBooleanValue(val, fallbackValue);
+  }
+
+  function normalizeHoursInput(value) {
+    const parsed = parseInt(String(value || ''), 10);
+    const minHours = Math.max(1, parseInt(String(cfg.prepaidHoursMin || 1), 10) || 1);
+    const maxHours = Math.max(minHours, parseInt(String(cfg.prepaidHoursMax || 8760), 10) || 8760);
+    if (!Number.isInteger(parsed) || parsed < minHours) {
+      return minHours;
+    }
+    if (parsed > maxHours) {
+      return maxHours;
+    }
+    return parsed;
+  }
+
+  function getSelectedPrepaidHours() {
+    const input = document.getElementById('order_hetzner_prepaid_hours');
+    if (!input) {
+      return normalizeHoursInput(cfg.prepaidHoursDefault || 24);
+    }
+    return normalizeHoursInput(input.value);
+  }
+
+  function syncPrepaidHoursQuantity() {
+    if (String(cfg.billingMode || 'standard') !== 'prepaid_hours') {
+      return;
+    }
+    const hours = getSelectedPrepaidHours();
+    const input = document.getElementById('order_hetzner_prepaid_hours');
+    if (input) {
+      input.value = String(hours);
+    }
+    const qty = document.getElementById('order_hetzner_quantity');
+    if (qty) {
+      qty.value = String(hours);
+    }
+  }
+
+  function getFirewallSelectionCount() {
+    if (cfg.firewallMode === 'customer') {
+      const el = document.getElementById('order_hetzner_firewall_ids');
+      if (!el) return 0;
+      return Array.prototype.slice.call(el.options || []).filter(function(op) { return !!op.selected; }).length;
+    }
+
+    const fixed = document.getElementById('order_hetzner_firewall_ids_fixed');
+    const fixedList = fixed ? parseIdList(fixed.value) : parseIdList(cfg.firewallDefaultIds || cfg.firewallIds || '');
+    return fixedList.length;
+  }
+
+  function setAddonSelected(addonId, enabled) {
+    const id = Number(addonId || 0);
+    if (!id || id < 1) return;
+
+    const add = document.getElementById('addon_' + id);
+    const decline = document.getElementById('addon_' + id + '_decline');
+    if (!add || !decline) return;
+
+    add.checked = !!enabled;
+    decline.checked = !enabled;
+  }
+
+  function syncMappedAddons() {
+    const ipv4Enabled = parseBooleanValue((document.getElementById('order_hetzner_ipv4') || {}).value, true);
+    const ipv6Enabled = parseBooleanValue((document.getElementById('order_hetzner_ipv6') || {}).value, true);
+    const backupsEnabled = parseBooleanValue((document.getElementById('order_hetzner_backups') || {}).value, false);
+    const firewallEnabled = getFirewallSelectionCount() > 0;
+
+    setAddonSelected(cfg.addonIpv4Id, ipv4Enabled);
+    setAddonSelected(cfg.addonIpv6Id, ipv6Enabled);
+    setAddonSelected(cfg.addonBackupsId, backupsEnabled);
+    setAddonSelected(cfg.addonFirewallId, firewallEnabled);
+    updateBillingSummary();
+  }
+
+  function getSelectedType() {
+    const el = document.getElementById('order_hetzner_server_type');
+    const selected = el ? String(el.value || '') : String(cfg.serverType || '');
+    return (catalog.server_types || []).find(function(type) {
+      return String(type.name || '') === selected;
+    }) || null;
+  }
+
+  function renderTypeHint() {
+    const hint = document.getElementById('order_hetzner_type_hint');
+    const type = getSelectedType();
+    if (!hint || !type) {
+      if (hint) hint.textContent = '';
+      return;
+    }
+
+    const location = getSelectedLocationName();
+    const row = findLocationPrice(((type.pricing || {}).location_prices || []), location);
+    if (row && (row.hourly_gross !== null || row.monthly_gross !== null)) {
+      const pair = normalizeRatePair(row.hourly_gross, row.monthly_gross);
+      if (pair.hourly !== null || pair.monthly !== null) {
+        hint.textContent = 'Estimated selected-location price: ' + formatPrice(pair.hourly, row.currency || type.price_currency) + ' hourly / ' + formatPrice(pair.monthly, row.currency || type.price_currency) + ' monthly';
+        return;
+      }
+    }
+
+    const fromPair = normalizeRatePair(type.price_hourly_from, type.price_monthly_from);
+    hint.textContent = 'Estimated from-price: ' + formatPrice(fromPair.hourly, type.price_currency) + ' hourly / ' + formatPrice(fromPair.monthly, type.price_currency) + ' monthly';
+  }
+
+  function renderOptionPricingHints() {
+    const type = getSelectedType();
+    const location = getSelectedLocationName();
+    const optionPricing = (catalog && catalog.option_pricing) ? catalog.option_pricing : {};
+    const currency = String(optionPricing.currency || (type ? (type.price_currency || 'EUR') : 'EUR'));
+
+    let ipv4Text = '';
+    const ipv4Pricing = optionPricing.ipv4 || {};
+    const ipv4Row = resolveOptionPrice(ipv4Pricing, location, currency);
+    if (ipv4Row && (ipv4Row.hourly_gross !== null || ipv4Row.monthly_gross !== null)) {
+      ipv4Text = 'Hetzner estimate: ' + formatEstimatePair(ipv4Row.hourly_gross, ipv4Row.monthly_gross, ipv4Row.currency || currency);
+    }
+
+    let ipv6Text = '';
+    const ipv6Pricing = optionPricing.ipv6 || {};
+    const ipv6Row = resolveOptionPrice(ipv6Pricing, location, currency);
+    if (ipv6Row && (ipv6Row.hourly_gross !== null || ipv6Row.monthly_gross !== null)) {
+      ipv6Text = 'Hetzner estimate: ' + formatEstimatePair(ipv6Row.hourly_gross, ipv6Row.monthly_gross, ipv6Row.currency || currency);
+    }
+
+    let backupsText = '';
+    const backupPctRaw = Number(optionPricing.backup_percentage);
+    const backupPct = Number.isNaN(backupPctRaw) ? null : backupPctRaw;
+    if (type && backupPct !== null) {
+      const typeRow = findLocationPrice(((type.pricing || {}).location_prices || []), location);
+      if (typeRow && (typeRow.hourly_gross !== null || typeRow.monthly_gross !== null)) {
+        const backupHourly = typeRow.hourly_gross === null ? null : (typeRow.hourly_gross * (backupPct / 100));
+        const backupMonthly = typeRow.monthly_gross === null ? null : (typeRow.monthly_gross * (backupPct / 100));
+        backupsText = 'Hetzner estimate: +' + formatEstimatePair(backupHourly, backupMonthly, typeRow.currency || currency) + ' (' + backupPct + '% of server price)';
+      }
+    }
+
+    setHintText('order_hetzner_ipv4_price_hint', ipv4Text);
+    setHintText('order_hetzner_ipv6_price_hint', ipv6Text);
+    setHintText('order_hetzner_backups_price_hint', backupsText);
+  }
+
+  function computeInfraEstimate() {
+    const type = getSelectedType();
+    if (!type) return null;
+
+    const location = getSelectedLocationName();
+    const typeRow = findLocationPrice(((type.pricing || {}).location_prices || []), location) || {};
+    const serverPair = normalizeRatePair(typeRow.hourly_gross, typeRow.monthly_gross);
+    let serverHourly = serverPair.hourly;
+    let serverMonthly = serverPair.monthly;
+    const currency = String(typeRow.currency || type.price_currency || ((catalog.option_pricing || {}).currency || 'EUR'));
+    if (serverHourly === null || serverMonthly === null) {
+      const fallbackPair = normalizeRatePair(type.price_hourly_from, type.price_monthly_from);
+      if (serverHourly === null) serverHourly = fallbackPair.hourly;
+      if (serverMonthly === null) serverMonthly = fallbackPair.monthly;
+    }
+    if (serverHourly === null) serverHourly = 0;
+    if (serverMonthly === null) serverMonthly = 0;
+
+    const options = (catalog.option_pricing || {});
+    let ipv4Hourly = 0;
+    let ipv4Monthly = 0;
+    if (parseBooleanInput('order_hetzner_ipv4', true)) {
+      const ipv4Row = resolveOptionPrice(options.ipv4 || {}, location, currency);
+      if (ipv4Row) {
+        const pair = normalizeRatePair(ipv4Row.hourly_gross, ipv4Row.monthly_gross);
+        if (pair.hourly !== null) ipv4Hourly = pair.hourly;
+        if (pair.monthly !== null) ipv4Monthly = pair.monthly;
+      }
+    }
+
+    let ipv6Hourly = 0;
+    let ipv6Monthly = 0;
+    if (parseBooleanInput('order_hetzner_ipv6', true)) {
+      const ipv6Row = resolveOptionPrice(options.ipv6 || {}, location, currency);
+      if (ipv6Row) {
+        const pair = normalizeRatePair(ipv6Row.hourly_gross, ipv6Row.monthly_gross);
+        if (pair.hourly !== null) ipv6Hourly = pair.hourly;
+        if (pair.monthly !== null) ipv6Monthly = pair.monthly;
+      }
+    }
+
+    let backupsHourly = 0;
+    let backupsMonthly = 0;
+    if (parseBooleanInput('order_hetzner_backups', false)) {
+      const pctRaw = Number(options.backup_percentage);
+      if (!Number.isNaN(pctRaw)) {
+        backupsHourly = serverHourly * (pctRaw / 100);
+        backupsMonthly = serverMonthly * (pctRaw / 100);
+      }
+    }
+
+    const hourly = serverHourly + ipv4Hourly + ipv6Hourly + backupsHourly;
+    const monthly = serverMonthly + ipv4Monthly + ipv6Monthly + backupsMonthly;
+
+    return {
+      hourly: hourly,
+      monthly: monthly,
+      currency: currency,
+      breakdown: {
+        serverHourly: serverHourly,
+        serverMonthly: serverMonthly,
+        ipv4Hourly: ipv4Hourly,
+        ipv4Monthly: ipv4Monthly,
+        ipv6Hourly: ipv6Hourly,
+        ipv6Monthly: ipv6Monthly,
+        backupsHourly: backupsHourly,
+        backupsMonthly: backupsMonthly
+      }
+    };
+  }
+
+  function updateBillingSummary() {
+    const baseLine = document.getElementById('order_hetzner_billing_base_line');
+    const addonsLine = document.getElementById('order_hetzner_billing_addons_line');
+    const totalLine = document.getElementById('order_hetzner_billing_total_line');
+    const estimateLine = document.getElementById('order_hetzner_billing_estimate_line');
+    if (!baseLine || !addonsLine || !totalLine || !estimateLine) {
+      return;
+    }
+
+    const isPrepaidMode = String(cfg.billingMode || 'standard') === 'prepaid_hours';
+    const infra = computeInfraEstimate();
+
+    if (isPrepaidMode) {
+      syncPrepaidHoursQuantity();
+      const hours = getSelectedPrepaidHours();
+      if (!infra) {
+        baseLine.textContent = 'Base product: select a server type to calculate hourly pricing.';
+        addonsLine.textContent = 'Selected addons: none';
+        totalLine.textContent = 'Estimated invoice now: -';
+        estimateLine.textContent = '';
+        return;
+      }
+
+      const breakdown = infra.breakdown || {};
+      const serverTotal = (Number(breakdown.serverHourly) || 0) * hours;
+      const ipv4Total = (Number(breakdown.ipv4Hourly) || 0) * hours;
+      const ipv6Total = (Number(breakdown.ipv6Hourly) || 0) * hours;
+      const backupsTotal = (Number(breakdown.backupsHourly) || 0) * hours;
+      const invoiceHoursTotal = (Number(infra.hourly) || 0) * hours;
+
+      baseLine.textContent = 'Base server (' + hours + 'h): ' + formatPrice(serverTotal, infra.currency);
+
+      const addonParts = [];
+      if ((Number(breakdown.ipv4Hourly) || 0) > 0) {
+        addonParts.push('IPv4 (' + hours + 'h): ' + formatPrice(ipv4Total, infra.currency));
+      }
+      if ((Number(breakdown.ipv6Hourly) || 0) > 0) {
+        addonParts.push('IPv6 (' + hours + 'h): ' + formatPrice(ipv6Total, infra.currency));
+      }
+      if ((Number(breakdown.backupsHourly) || 0) > 0) {
+        addonParts.push('Backups (' + hours + 'h): ' + formatPrice(backupsTotal, infra.currency));
+      }
+      addonsLine.textContent = addonParts.length ? ('Selected addons: ' + addonParts.join(' | ')) : 'Selected addons: none';
+
+      totalLine.textContent = 'Estimated invoice now: ' + formatPrice(invoiceHoursTotal, infra.currency);
+      estimateLine.textContent = 'Hetzner infra estimate: ' + formatPrice(infra.hourly, infra.currency) + ' hourly / ' + formatPrice(infra.monthly, infra.currency) + ' monthly';
+      return;
+    }
+
+    const period = getSelectedPeriodCode();
+    const baseCharge = getChargeForProductPeriod(period);
+    let baseTotal = 0;
+    if (!isPrepaidMode) {
+      baseTotal = (Number(baseCharge.price) || 0) + (Number(baseCharge.setup) || 0);
+    }
+
+    const periodLabel = period ? (' (' + period + ')') : '';
+    if (!isPrepaidMode) {
+      baseLine.textContent = 'Base product' + periodLabel + ': ' + formatChargeInline(baseCharge);
+    }
+
+    const mappedAddonIds = Array.from(new Set([
+      Number(cfg.addonIpv4Id || 0),
+      Number(cfg.addonIpv6Id || 0),
+      Number(cfg.addonBackupsId || 0),
+      Number(cfg.addonFirewallId || 0)
+    ].filter(function(id) { return id > 0; })));
+
+    const addonParts = [];
+    let addonsTotal = 0;
+    mappedAddonIds.forEach(function(id) {
+      if (!isAddonSelected(id)) return;
+      const charge = getAddonCharge(id, period);
+      addonsTotal += (Number(charge.price) || 0) + (Number(charge.setup) || 0);
+      addonParts.push((charge.title || ('Addon #' + id)) + ': ' + formatChargeInline(charge));
+    });
+    addonsLine.textContent = addonParts.length ? ('Selected addons: ' + addonParts.join(' | ')) : 'Selected addons: none';
+
+    const invoiceNow = baseTotal + addonsTotal;
+    totalLine.textContent = 'Estimated invoice now: ' + formatCurrencyAmount(invoiceNow);
+
+    if (infra) {
+      estimateLine.textContent = 'Hetzner infra estimate: ' + formatPrice(infra.hourly, infra.currency) + ' hourly / ' + formatPrice(infra.monthly, infra.currency) + ' monthly';
+    } else {
+      estimateLine.textContent = '';
+    }
+  }
+
+  function populateServerTypes() {
+    if (!cfg.allowServerTypeChoice) {
+      renderTypeHint();
+      return;
+    }
+
+    const el = document.getElementById('order_hetzner_server_type');
+    if (!el) return;
+
+    const options = ['<option value="">Select server type</option>'];
+    (catalog.server_types || []).forEach(function(type) {
+      const name = String(type.name || '');
+      if (!name) return;
+      const selected = cfg.serverType === name ? ' selected' : '';
+      options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(name + ' | ' + (type.cores || 0) + ' vCPU | ' + (type.memory || 0) + ' GB') + '</option>');
+    });
+    el.innerHTML = options.join('');
+    renderTypeHint();
+  }
+
+  function populateLocations() {
+    if (!cfg.allowLocationChoice) return;
+
+    const input = document.getElementById('order_hetzner_location');
+    const buttonsWrap = document.getElementById('order_hetzner_location_buttons');
+    if (!input || !buttonsWrap) return;
+
+    const type = getSelectedType();
+    let allowed = [];
+    if (type && Array.isArray(type.available_locations) && type.available_locations.length) {
+      allowed = type.available_locations.map(String);
+    }
+
+    const rows = [];
+    (catalog.locations || []).forEach(function(location) {
+      const name = String(location.name || '');
+      if (!name) return;
+      if (allowed.length && allowed.indexOf(name) === -1) return;
+      rows.push(location);
+    });
+
+    rows.sort(function(a, b) {
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+
+    const current = String(input.value || cfg.location || '').trim();
+    let selectedName = '';
+    if (rows.some(function(row) { return String(row.name || '') === current; })) {
+      selectedName = current;
+    } else if (rows.length) {
+      selectedName = String(rows[0].name || '');
+    }
+    input.value = selectedName;
+
+    if (!rows.length) {
+      buttonsWrap.innerHTML = '<div class="small text-muted">No locations available for selected server type.</div>';
+      return;
+    }
+
+    const cards = [];
+    rows.forEach(function(location) {
+      const name = String(location.name || '');
+      const title = name + (location.city ? (' (' + location.city + ')') : '');
+      const priceRow = findLocationPrice(((type && type.pricing ? type.pricing.location_prices : []) || []), name);
+      const pair = priceRow ? normalizeRatePair(priceRow.hourly_gross, priceRow.monthly_gross) : { hourly: null, monthly: null };
+      const priceText = (pair.hourly !== null || pair.monthly !== null)
+        ? (formatPrice(pair.hourly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' hourly / ' + formatPrice(pair.monthly, (priceRow && priceRow.currency) || (type ? type.price_currency : 'EUR')) + ' monthly')
+        : 'Pricing unavailable';
+      const active = name === selectedName;
+      const btnClass = active ? 'btn btn-primary text-start' : 'btn btn-outline-secondary text-start';
+      cards.push(
+        '<button type="button" class="' + btnClass + ' order-hetzner-location-btn" data-location="' + esc(name) + '" style="min-width: 220px;">'
+          + '<div class="fw-semibold">' + esc(title) + '</div>'
+          + '<div class="small">' + esc(priceText) + '</div>'
+        + '</button>'
+      );
+    });
+
+    buttonsWrap.innerHTML = cards.join('');
+    buttonsWrap.querySelectorAll('.order-hetzner-location-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const value = String(btn.getAttribute('data-location') || '');
+        if (!value) return;
+        input.value = value;
+        populateLocations();
+        input.dispatchEvent(new Event('change'));
+      });
+    });
+  }
+
+  function populateImages() {
+    if (!cfg.allowImageChoice) return;
+
+    const el = document.getElementById('order_hetzner_image');
+    if (!el) return;
+
+    const type = getSelectedType();
+    const typeArch = type && type.architecture ? String(type.architecture) : '';
+
+    const options = ['<option value="">Select image</option>'];
+    (catalog.images || []).forEach(function(image) {
+      const name = String(image.name || '');
+      if (!name) return;
+      const arch = String(image.architecture || '');
+      if (typeArch && arch && arch !== typeArch) return;
+
+      const selected = cfg.image === name ? ' selected' : '';
+      options.push('<option value="' + esc(name) + '"' + selected + '>' + esc(name + (image.description ? ' | ' + image.description : '')) + '</option>');
+    });
+
+    el.innerHTML = options.join('');
+  }
+
+  function populateFirewalls() {
+    if (cfg.firewallMode !== 'customer') return;
+
+    const el = document.getElementById('order_hetzner_firewall_ids');
+    if (!el) return;
+
+    const allowed = parseIdList(cfg.firewallIds);
+    const defaults = parseIdList(cfg.firewallDefaultIds);
+
+    const options = [];
+    (catalog.firewalls || []).forEach(function(fw) {
+      const id = parseInt(fw.id, 10);
+      if (!id) return;
+      if (allowed.length && allowed.indexOf(id) === -1) return;
+      const selected = defaults.indexOf(id) !== -1 ? ' selected' : '';
+      options.push('<option value="' + id + '"' + selected + '>' + esc(id + ' - ' + (fw.name || 'Firewall')) + '</option>');
+    });
+
+    el.innerHTML = options.join('');
+  }
+
+  function refreshDependent() {
+    populateLocations();
+    renderTypeHint();
+    populateImages();
+    renderOptionPricingHints();
+    syncMappedAddons();
+  }
+
+  function loadCatalog() {
+    API.guest.post('servicehetzner/catalog_get', { refresh: '1' }, function(result) {
+      if (result && result.ok === false) {
+        FOSSBilling.message(result.message || 'Failed to load Hetzner catalog', 'error');
+        return;
+      }
+
+      catalog = (result && result.catalog) ? result.catalog : { server_types: [], locations: [], images: [], firewalls: [], option_pricing: {} };
+      populateServerTypes();
+      refreshDependent();
+      populateFirewalls();
+      renderOptionPricingHints();
+      syncMappedAddons();
+      updateBillingSummary();
+    }, function(result) {
+      FOSSBilling.message((result && result.message) || 'Failed to load Hetzner catalog', 'error');
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    syncPrepaidHoursQuantity();
+    syncMappedAddons();
+    updateBillingSummary();
+
+    API.guest.post('cart/get_currency', {}, function(result) {
+      if (result && result.code) {
+        billingCurrencyCode = String(result.code);
+      }
+      updateBillingSummary();
+    });
+
+    loadCatalog();
+
+    const serverType = document.getElementById('order_hetzner_server_type');
+    if (serverType) {
+      serverType.addEventListener('change', refreshDependent);
+    }
+
+    const location = document.getElementById('order_hetzner_location');
+    if (location) {
+      location.addEventListener('change', function() {
+        renderTypeHint();
+        renderOptionPricingHints();
+        updateBillingSummary();
+      });
+    }
+
+    const locationInput = document.getElementById('order_hetzner_location');
+    const orderForm = locationInput ? locationInput.closest('form') : null;
+    if (orderForm) {
+      orderForm.addEventListener('submit', function(ev) {
+        if (cfg.allowLocationChoice && !String(locationInput.value || '').trim()) {
+          ev.preventDefault();
+          FOSSBilling.message('Please select a location.', 'error');
+        }
+      });
+    }
+
+    const period = document.getElementById('order_hetzner_period');
+    if (period) {
+      period.addEventListener('change', updateBillingSummary);
+    }
+
+    const prepaidHours = document.getElementById('order_hetzner_prepaid_hours');
+    if (prepaidHours) {
+      ['input', 'change'].forEach(function(ev) {
+        prepaidHours.addEventListener(ev, function() {
+          syncPrepaidHoursQuantity();
+          updateBillingSummary();
+        });
+      });
+    }
+
+    ['order_hetzner_ipv4', 'order_hetzner_ipv6', 'order_hetzner_backups'].forEach(function(id) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('change', syncMappedAddons);
+      }
+    });
+
+    const firewall = document.getElementById('order_hetzner_firewall_ids');
+    if (firewall) {
+      firewall.addEventListener('change', syncMappedAddons);
+    }
+
+    document.querySelectorAll('input[name^="addons["][name$="[selected]"]').forEach(function(el) {
+      el.addEventListener('change', updateBillingSummary);
+    });
+    document.querySelectorAll('select[name^="addons["][name$="[period]"]').forEach(function(el) {
+      el.addEventListener('change', updateBillingSummary);
+    });
+  });
+})();
+</script>

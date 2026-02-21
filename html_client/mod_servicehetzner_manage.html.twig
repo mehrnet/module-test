@@ -1,0 +1,191 @@
+{% extends "layout_default.html.twig" %}
+
+{% block meta_title %}{{ 'VPS Control'|trans }}{% endblock %}
+
+{% block content %}
+{% set order_id = order.id|default(0) %}
+
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">{{ 'Hetzner VPS'|trans }}</h3>
+  </div>
+  <div class="card-body">
+    <p>{{ 'This page controls your provisioned VPS server.'|trans }}</p>
+
+    {% if order_id %}
+      <div class="d-flex gap-2 mb-3">
+        <button type="button" class="btn btn-secondary" onclick="refreshHetznerDetails();">{{ 'Refresh status'|trans }}</button>
+        <button type="button" class="btn btn-secondary" onclick="runHetznerAction('power_on');">{{ 'Power on'|trans }}</button>
+        <button type="button" class="btn btn-secondary" onclick="runHetznerAction('power_off');">{{ 'Power off'|trans }}</button>
+        <button type="button" class="btn btn-secondary" onclick="runHetznerAction('reboot');">{{ 'Reboot'|trans }}</button>
+      </div>
+
+      <div class="card mb-3" id="hetzner-topup-card" style="display:none;">
+        <div class="card-header">{{ 'Hourly Balance'|trans }}</div>
+        <div class="card-body">
+          <div id="hetzner-billing-summary" class="mb-2 text-muted"></div>
+          <div class="row g-2">
+            <div class="col-md-4">
+              <label class="form-label">{{ 'Top-up hours'|trans }}</label>
+              <input type="number" class="form-control" id="hetzner_topup_hours" min="1" step="1" value="1">
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+              <button type="button" class="btn btn-primary" onclick="createHetznerTopupInvoice();">{{ 'Create top-up invoice'|trans }}</button>
+            </div>
+          </div>
+          <small class="form-hint">{{ 'Server is suspended automatically when prepaid hours are exhausted.'|trans }}</small>
+        </div>
+      </div>
+
+      <div id="hetzner-details-box">
+        <p>{{ 'Loading server details...'|trans }}</p>
+      </div>
+    {% else %}
+      <p>{{ 'Order context missing for this page.'|trans }}</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if order_id %}
+<script>
+const HETZNER_ORDER_ID = {{ order_id }};
+
+function esc(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatMoney(value, currency) {
+  const amount = Number(value || 0);
+  if (Number.isNaN(amount)) {
+    return String(value || '0');
+  }
+  if (currency) {
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: String(currency) }).format(amount);
+    } catch (e) {}
+  }
+  return amount.toFixed(2);
+}
+
+function renderHetznerBilling(data) {
+  const billing = data.billing || {};
+  const card = document.getElementById('hetzner-topup-card');
+  const summary = document.getElementById('hetzner-billing-summary');
+  const input = document.getElementById('hetzner_topup_hours');
+  if (!card || !summary || !input) {
+    return;
+  }
+
+  if (String(billing.mode || 'standard') !== 'prepaid_hours') {
+    card.style.display = 'none';
+    return;
+  }
+
+  card.style.display = '';
+  const minHours = Math.max(1, parseInt(String(billing.topup_min_hours || 1), 10) || 1);
+  const maxHours = Math.max(minHours, parseInt(String(billing.topup_max_hours || 8760), 10) || 8760);
+  input.min = String(minHours);
+  input.max = String(maxHours);
+  if (!input.value || Number(input.value) < minHours || Number(input.value) > maxHours) {
+    input.value = String(minHours);
+  }
+
+  summary.innerHTML = [
+    'Balance: <strong>' + esc(billing.hours_balance || 0) + 'h</strong>',
+    'Purchased: ' + esc(billing.hours_purchased_total || 0) + 'h',
+    'Consumed: ' + esc(billing.hours_consumed || 0) + 'h',
+    'Hourly rate: ' + esc(formatMoney(billing.hourly_rate || 0, billing.currency || ''))
+  ].join(' | ');
+}
+
+function renderHetznerDetails(data) {
+  const box = document.getElementById('hetzner-details-box');
+  const server = data.server || null;
+  renderHetznerBilling(data || {});
+
+  if (!server) {
+    box.innerHTML = '<p>No server is provisioned yet. Status: <strong>' + esc(data.provision_status || 'not_provisioned') + '</strong></p>';
+    return;
+  }
+
+  const ipv4 = server.public_net && server.public_net.ipv4 ? (server.public_net.ipv4.ip || '') : '';
+  const ipv6 = server.public_net && server.public_net.ipv6 ? (server.public_net.ipv6.ip || '') : '';
+
+  box.innerHTML = [
+    '<div class="table-responsive">',
+    '<table class="table table-striped">',
+    '<tbody>',
+    '<tr><th>Server ID</th><td><code>' + esc(server.id || '') + '</code></td></tr>',
+    '<tr><th>Name</th><td>' + esc(server.name || '') + '</td></tr>',
+    '<tr><th>Status</th><td>' + esc(server.status || '') + '</td></tr>',
+    '<tr><th>IPv4</th><td>' + esc(ipv4) + '</td></tr>',
+    '<tr><th>IPv6</th><td>' + esc(ipv6) + '</td></tr>',
+    '<tr><th>Type</th><td>' + esc(server.server_type && server.server_type.name ? server.server_type.name : '') + '</td></tr>',
+    '<tr><th>Image</th><td>' + esc(server.image && server.image.name ? server.image.name : '') + '</td></tr>',
+    '<tr><th>Datacenter</th><td>' + esc(server.datacenter && server.datacenter.name ? server.datacenter.name : '') + '</td></tr>',
+    '</tbody>',
+    '</table>',
+    '</div>'
+  ].join('');
+}
+
+function refreshHetznerDetails() {
+  API.client.post('servicehetzner/get_details', { order_id: HETZNER_ORDER_ID }, function(result) {
+    renderHetznerDetails(result || {});
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to load server details', 'error');
+  });
+}
+
+function createHetznerTopupInvoice() {
+  const input = document.getElementById('hetzner_topup_hours');
+  const hours = parseInt(String((input && input.value) || ''), 10);
+  if (!Number.isInteger(hours) || hours <= 0) {
+    FOSSBilling.message('Please enter a valid top-up hour amount.', 'error');
+    return;
+  }
+
+  API.client.post('servicehetzner/topup_invoice_create', { order_id: HETZNER_ORDER_ID, hours: hours }, function(result) {
+    if (!result || result.ok === false) {
+      FOSSBilling.message((result && result.message) || 'Failed to create top-up invoice', 'error');
+      return;
+    }
+    FOSSBilling.message('Top-up invoice created successfully.');
+    if (result.invoice_url) {
+      window.location.href = result.invoice_url;
+      return;
+    }
+    if (result.invoice_hash) {
+      window.location.href = '{{ "invoice"|link }}' + '/' + result.invoice_hash;
+      return;
+    }
+    refreshHetznerDetails();
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to create top-up invoice', 'error');
+  });
+}
+
+function runHetznerAction(actionName) {
+  API.client.post('servicehetzner/' + actionName, { order_id: HETZNER_ORDER_ID }, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Action failed', 'error');
+      return;
+    }
+    FOSSBilling.message('Action queued successfully.');
+    refreshHetznerDetails();
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Action failed', 'error');
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  refreshHetznerDetails();
+});
+</script>
+{% endif %}
+{% endblock %}

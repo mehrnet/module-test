@@ -1,0 +1,455 @@
+{% extends request.ajax ? "layout_blank.html.twig" : "layout_default.html.twig" %}
+
+{% block meta_title %}{{ 'Hetzner Cloud'|trans }}{% endblock %}
+{% set active_menu = 'system' %}
+
+{% block content %}
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">{{ 'Hetzner Cloud VPS manager settings'|trans }}</h3>
+  </div>
+  <div class="card-body">
+    <p>{{ 'Manage multiple Hetzner project API keys and map products by project_ref + server_type + image.'|trans }}</p>
+
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label" for="default_project_ref">{{ 'Default project ref'|trans }}</label>
+        <select id="default_project_ref" class="form-select"></select>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label" for="delete_on_cancel">{{ 'Delete server when order is cancelled (default)'|trans }}</label>
+        <div class="form-check mt-2">
+          <input id="delete_on_cancel" type="checkbox" class="form-check-input" {% if config.delete_on_cancel == '1' %}checked{% endif %}>
+          <label for="delete_on_cancel" class="form-check-label">{{ 'Enabled'|trans }}</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-3">
+      <button type="button" class="btn btn-primary" onclick="saveGlobalSettings();">{{ 'Save global settings'|trans }}</button>
+      <button type="button" class="btn btn-secondary" onclick="reloadProjects();">{{ 'Reload'|trans }}</button>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">{{ 'Project connection'|trans }}</h3>
+  </div>
+  <div class="card-body">
+    <p>{{ 'One Hetzner API key per project. Products can target different project_ref values.'|trans }}</p>
+
+    <div class="row g-3">
+      <div class="col-md-4">
+        <label class="form-label" for="project_ref">{{ 'Project ref'|trans }}</label>
+        <input id="project_ref" class="form-control" placeholder="prod-a1" />
+      </div>
+      <div class="col-md-8">
+        <label class="form-label" for="project_label">{{ 'Label'|trans }}</label>
+        <input id="project_label" class="form-control" placeholder="Production A1" />
+      </div>
+      <div class="col-md-8">
+        <label class="form-label" for="project_api_url">{{ 'API Base URL'|trans }}</label>
+        <input id="project_api_url" class="form-control" value="https://api.hetzner.cloud/v1" />
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="project_timeout">{{ 'Timeout (seconds)'|trans }}</label>
+        <input id="project_timeout" type="number" min="3" max="120" class="form-control" value="20" />
+      </div>
+      <div class="col-md-8">
+        <label class="form-label" for="project_api_token">{{ 'API Token'|trans }}</label>
+        <input id="project_api_token" type="password" class="form-control" data-token-set="0" placeholder="Enter token" />
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="project_max_servers">{{ 'Max servers capacity (0 = unlimited)'|trans }}</label>
+        <input id="project_max_servers" type="number" min="0" class="form-control" value="0" />
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="project_priority">{{ 'Priority (lower fills first)'|trans }}</label>
+        <input id="project_priority" type="number" class="form-control" value="" placeholder="auto" />
+      </div>
+      <div class="col-md-6">
+        <div class="form-check mt-4">
+          <input id="project_verify_ssl" type="checkbox" class="form-check-input" checked>
+          <label class="form-check-label" for="project_verify_ssl">{{ 'Verify SSL certificates'|trans }}</label>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="form-check mt-4">
+          <input id="project_is_default" type="checkbox" class="form-check-input">
+          <label class="form-check-label" for="project_is_default">{{ 'Set as default project'|trans }}</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-3 d-flex gap-2">
+      <button type="button" class="btn btn-primary" onclick="saveProject();">{{ 'Save project'|trans }}</button>
+      <button type="button" class="btn btn-secondary" onclick="testProjectConnection();">{{ 'Test connection'|trans }}</button>
+      <button type="button" class="btn btn-secondary" onclick="syncCurrentProject();">{{ 'Sync catalog/capacity'|trans }}</button>
+      <button type="button" class="btn btn-outline-secondary" onclick="resetProjectForm();">{{ 'New form'|trans }}</button>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">{{ 'Configured projects'|trans }}</h3>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-striped" id="projects-table">
+        <thead>
+          <tr>
+            <th>{{ 'Ref'|trans }}</th>
+            <th>{{ 'Label'|trans }}</th>
+            <th>{{ 'Priority'|trans }}</th>
+            <th>{{ 'Status'|trans }}</th>
+            <th>{{ 'Capacity'|trans }}</th>
+            <th>{{ 'Synced at'|trans }}</th>
+            <th>{{ 'Actions'|trans }}</th>
+          </tr>
+        </thead>
+        <tbody id="projects-table-body">
+          <tr><td colspan="7">{{ 'Loading...'|trans }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">{{ 'Catalog preview'|trans }}</h3>
+  </div>
+  <div class="card-body" id="catalog-preview">
+    <p>{{ 'Select a project row action to load available server types and locations.'|trans }}</p>
+  </div>
+</div>
+
+<script>
+const TOKEN_MASK = '****************';
+let projectsState = [];
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function toCapacityText(project) {
+  const capacity = project.capacity || {};
+  const used = capacity.used_servers || 0;
+  const max = capacity.max_servers || 0;
+  if (max > 0) {
+    return used + ' / ' + max;
+  }
+  return used + ' / unlimited';
+}
+
+function formatPrice(value, currency) {
+  if (value === null || value === undefined || value === '') {
+    return '-';
+  }
+  const n = Number(value);
+  if (Number.isNaN(n)) {
+    return escapeHtml(value);
+  }
+  return n.toFixed(5) + ' ' + escapeHtml(currency || 'EUR');
+}
+
+function setProjectForm(project) {
+  const tokenInput = document.getElementById('project_api_token');
+
+  document.getElementById('project_ref').value = project.ref || '';
+  document.getElementById('project_label').value = project.label || '';
+  document.getElementById('project_api_url').value = project.api_url || 'https://api.hetzner.cloud/v1';
+  document.getElementById('project_timeout').value = project.timeout || '20';
+  document.getElementById('project_verify_ssl').checked = (project.verify_ssl || '1') !== '0';
+  document.getElementById('project_max_servers').value = project.max_servers || 0;
+  document.getElementById('project_priority').value = Number.isFinite(Number(project.priority)) ? Number(project.priority) : '';
+  document.getElementById('project_is_default').checked = !!project.is_default;
+
+  tokenInput.dataset.tokenSet = project.api_token_set ? '1' : '0';
+  tokenInput.value = project.api_token_set ? TOKEN_MASK : '';
+  tokenInput.placeholder = project.api_token_set
+    ? 'Saved token exists. Enter a new token only to replace it.'
+    : 'Enter token';
+}
+
+function resetProjectForm() {
+  document.getElementById('project_ref').value = '';
+  document.getElementById('project_label').value = '';
+  document.getElementById('project_api_url').value = 'https://api.hetzner.cloud/v1';
+  document.getElementById('project_timeout').value = '20';
+  document.getElementById('project_verify_ssl').checked = true;
+  document.getElementById('project_max_servers').value = '0';
+  document.getElementById('project_priority').value = '';
+  document.getElementById('project_is_default').checked = false;
+
+  const tokenInput = document.getElementById('project_api_token');
+  tokenInput.dataset.tokenSet = '0';
+  tokenInput.value = '';
+  tokenInput.placeholder = 'Enter token';
+}
+
+function collectProjectPayload() {
+  const tokenRaw = document.getElementById('project_api_token').value.trim();
+  const token = tokenRaw === TOKEN_MASK ? '' : tokenRaw;
+
+  return {
+    ref: document.getElementById('project_ref').value.trim(),
+    label: document.getElementById('project_label').value.trim(),
+    api_url: document.getElementById('project_api_url').value.trim(),
+    api_token: token,
+    timeout: document.getElementById('project_timeout').value,
+    verify_ssl: document.getElementById('project_verify_ssl').checked ? '1' : '0',
+    max_servers: document.getElementById('project_max_servers').value,
+    priority: document.getElementById('project_priority').value,
+    is_default: document.getElementById('project_is_default').checked ? '1' : '0'
+  };
+}
+
+function renderDefaultProjectOptions(defaultRef) {
+  const select = document.getElementById('default_project_ref');
+  const items = projectsState || [];
+
+  const options = items.map(function(project) {
+    const selected = project.ref === defaultRef ? ' selected' : '';
+    return '<option value="' + escapeHtml(project.ref) + '"' + selected + '>' + escapeHtml(project.ref + ' - ' + project.label) + '</option>';
+  });
+
+  select.innerHTML = options.length ? options.join('') : '<option value="">No projects</option>';
+}
+
+function renderProjectsTable() {
+  const tbody = document.getElementById('projects-table-body');
+  if (!projectsState.length) {
+    tbody.innerHTML = '<tr><td colspan="7">No projects configured yet.</td></tr>';
+    return;
+  }
+
+  const rows = projectsState.map(function(project) {
+    const syncAt = project.last_sync_at ? escapeHtml(project.last_sync_at) : '-';
+    const status = project.status || 'unknown';
+    const defaultBadge = project.is_default ? ' <span class="badge bg-primary">default</span>' : '';
+
+    return [
+      '<tr>',
+      '<td><code>' + escapeHtml(project.ref) + '</code>' + defaultBadge + '</td>',
+      '<td>' + escapeHtml(project.label || '') + '</td>',
+      '<td>' + escapeHtml(project.priority != null ? project.priority : 100) + '</td>',
+      '<td>' + escapeHtml(status) + '</td>',
+      '<td>' + escapeHtml(toCapacityText(project)) + '</td>',
+      '<td>' + syncAt + '</td>',
+      '<td>',
+      '<button type="button" class="btn btn-sm btn-outline-primary me-1" onclick="editProject(\'' + escapeHtml(project.ref) + '\')">Edit</button>',
+      '<button type="button" class="btn btn-sm btn-outline-secondary me-1" onclick="syncProject(\'' + escapeHtml(project.ref) + '\')">Sync</button>',
+      '<button type="button" class="btn btn-sm btn-outline-secondary me-1" onclick="loadCatalog(\'' + escapeHtml(project.ref) + '\', true)">Catalog</button>',
+      '<button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteProject(\'' + escapeHtml(project.ref) + '\')">Delete</button>',
+      '</td>',
+      '</tr>'
+    ].join('');
+  });
+
+  tbody.innerHTML = rows.join('');
+}
+
+function renderCatalog(catalog) {
+  const container = document.getElementById('catalog-preview');
+  if (!catalog) {
+    container.innerHTML = '<p>No catalog data.</p>';
+    return;
+  }
+
+  const types = Array.isArray(catalog.server_types) ? catalog.server_types : [];
+  const locations = Array.isArray(catalog.locations) ? catalog.locations : [];
+
+  const typeRows = types.slice(0, 20).map(function(type) {
+    const currency = type.price_currency || 'EUR';
+    return '<tr>' +
+      '<td><code>' + escapeHtml(type.name) + '</code></td>' +
+      '<td>' + escapeHtml(type.description || '') + '</td>' +
+      '<td>' + escapeHtml(type.cores || 0) + '</td>' +
+      '<td>' + escapeHtml(type.memory || 0) + ' GB</td>' +
+      '<td>' + escapeHtml(type.disk || 0) + ' GB</td>' +
+      '<td>' + formatPrice(type.price_hourly_from, currency) + '</td>' +
+      '<td>' + formatPrice(type.price_monthly_from, currency) + '</td>' +
+      '<td>' + (type.deprecated ? 'yes' : 'no') + '</td>' +
+      '</tr>';
+  }).join('');
+
+  const locationRows = locations.slice(0, 20).map(function(location) {
+    return '<tr>' +
+      '<td><code>' + escapeHtml(location.name) + '</code></td>' +
+      '<td>' + escapeHtml(location.city || '') + '</td>' +
+      '<td>' + escapeHtml(location.country || '') + '</td>' +
+      '<td>' + escapeHtml(location.network_zone || '') + '</td>' +
+      '</tr>';
+  }).join('');
+
+  const capacity = catalog.capacity || {};
+  const maxLabel = (capacity.max_servers || 0) > 0 ? capacity.max_servers : 'unlimited';
+
+  container.innerHTML = [
+    '<p><strong>Project:</strong> <code>' + escapeHtml(catalog.project_ref || '') + '</code> | ',
+    '<strong>Capacity:</strong> ' + escapeHtml(capacity.used_servers || 0) + ' / ' + escapeHtml(maxLabel) + ' | ',
+    '<strong>Synced at:</strong> ' + escapeHtml(catalog.synced_at || '-') + '</p>',
+    '<div class="row g-3">',
+    '<div class="col-md-7">',
+    '<h4>Server types (' + escapeHtml(types.length) + ')</h4>',
+    '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Name</th><th>Description</th><th>Cores</th><th>Memory</th><th>Disk</th><th>Hourly (from)</th><th>Monthly (from)</th><th>Deprecated</th></tr></thead><tbody>' + (typeRows || '<tr><td colspan="8">No server types returned.</td></tr>') + '</tbody></table></div>',
+    '</div>',
+    '<div class="col-md-5">',
+    '<h4>Locations (' + escapeHtml(locations.length) + ')</h4>',
+    '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Name</th><th>City</th><th>Country</th><th>Zone</th></tr></thead><tbody>' + (locationRows || '<tr><td colspan="4">No locations returned.</td></tr>') + '</tbody></table></div>',
+    '</div>',
+    '</div>'
+  ].join('');
+}
+
+function applyConfig(config) {
+  projectsState = Array.isArray(config.projects) ? config.projects : [];
+
+  renderDefaultProjectOptions(config.default_project_ref || '');
+  renderProjectsTable();
+
+  document.getElementById('delete_on_cancel').checked = String(config.delete_on_cancel || '0') === '1';
+
+  const defaultProject = projectsState.find(function(project) {
+    return !!project.is_default;
+  }) || projectsState[0];
+
+  if (defaultProject) {
+    setProjectForm(defaultProject);
+  } else {
+    resetProjectForm();
+  }
+}
+
+function reloadProjects() {
+  API.admin.post('servicehetzner/config_get', {}, function(result) {
+    applyConfig(result || {});
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to load configuration', 'error');
+  });
+}
+
+function saveGlobalSettings() {
+  API.admin.post('servicehetzner/config_update', {
+    default_project_ref: document.getElementById('default_project_ref').value,
+    delete_on_cancel: document.getElementById('delete_on_cancel').checked ? '1' : '0'
+  }, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Failed to save settings', 'error');
+      return;
+    }
+    FOSSBilling.message((result && result.message) || 'Settings saved.');
+    reloadProjects();
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to save settings', 'error');
+  });
+}
+
+function saveProject() {
+  const payload = collectProjectPayload();
+  API.admin.post('servicehetzner/project_upsert', payload, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Failed to save project', 'error');
+      return;
+    }
+    FOSSBilling.message((result && result.message) || 'Project saved.');
+    reloadProjects();
+    const tokenInput = document.getElementById('project_api_token');
+    tokenInput.value = TOKEN_MASK;
+    tokenInput.dataset.tokenSet = '1';
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to save project', 'error');
+  });
+}
+
+function testProjectConnection() {
+  const payload = collectProjectPayload();
+  API.admin.post('servicehetzner/connection_test', payload, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Connection test failed', 'error');
+      return;
+    }
+    FOSSBilling.message((result && result.message) || ('Connection OK (HTTP ' + (result ? result.http_code : '?') + ').'));
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Connection test failed', 'error');
+  });
+}
+
+function syncProject(ref) {
+  API.admin.post('servicehetzner/project_sync', { ref: ref }, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Failed to sync project', 'error');
+      return;
+    }
+    FOSSBilling.message((result && result.message) || 'Project synced.');
+    reloadProjects();
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to sync project', 'error');
+  });
+}
+
+function syncCurrentProject() {
+  const ref = document.getElementById('project_ref').value.trim();
+  if (!ref) {
+    FOSSBilling.message('Enter a project ref first.', 'error');
+    return;
+  }
+  syncProject(ref);
+}
+
+function deleteProject(ref) {
+  if (!confirm('Delete project "' + ref + '"?')) {
+    return;
+  }
+
+  API.admin.post('servicehetzner/project_delete', { ref: ref }, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Failed to delete project', 'error');
+      return;
+    }
+    FOSSBilling.message((result && result.message) || 'Project deleted.');
+    reloadProjects();
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to delete project', 'error');
+  });
+}
+
+function editProject(ref) {
+  const project = projectsState.find(function(item) {
+    return item.ref === ref;
+  });
+  if (!project) {
+    FOSSBilling.message('Project not found in current state.', 'error');
+    return;
+  }
+  setProjectForm(project);
+}
+
+function loadCatalog(ref, refresh) {
+  API.admin.post('servicehetzner/catalog_get', {
+    ref: ref,
+    refresh: refresh ? '1' : '0'
+  }, function(result) {
+    if (result && result.ok === false) {
+      FOSSBilling.message(result.message || 'Failed to load catalog', 'error');
+      return;
+    }
+    renderCatalog(result.catalog || null);
+  }, function(result) {
+    FOSSBilling.message((result && result.message) || 'Failed to load catalog', 'error');
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  reloadProjects();
+});
+</script>
+{% endblock %}
