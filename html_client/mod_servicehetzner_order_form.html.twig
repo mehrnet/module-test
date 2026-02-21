@@ -440,7 +440,12 @@
     return match ? parseInt(match[1], 10) : 0;
   }
 
-  function getServerTypeCategory(name, cpuType) {
+  function getServerTypeCategory(name, cpuType, apiCategory) {
+    const category = String(apiCategory || '').trim().toLowerCase();
+    if (category === 'cost_optimized') return 'cost_optimized';
+    if (category === 'regular_purpose') return 'balanced';
+    if (category === 'general_purpose') return 'dedicated_cpu';
+
     const family = getServerTypeFamily(name);
     const cpu = String(cpuType || '').toLowerCase();
     if (cpu === 'dedicated' || family === 'ccx') return 'dedicated_cpu';
@@ -514,8 +519,8 @@
   }
 
   function sortServerTypes(a, b) {
-    const catA = getServerTypeCategoryMeta(getServerTypeCategory(a.name, a.cpu_type || a.cpuType || ''));
-    const catB = getServerTypeCategoryMeta(getServerTypeCategory(b.name, b.cpu_type || b.cpuType || ''));
+    const catA = getServerTypeCategoryMeta(getServerTypeCategory(a.name, a.cpu_type || a.cpuType || '', a.category || ''));
+    const catB = getServerTypeCategoryMeta(getServerTypeCategory(b.name, b.cpu_type || b.cpuType || '', b.category || ''));
     if (catA.order !== catB.order) return catA.order - catB.order;
 
     const familyOrder = { cx: 10, cax: 20, cpx: 30, ccx: 40 };
@@ -575,6 +580,9 @@
       const normalized = {
         monthly_gross: Number.isNaN(monthly) ? null : monthly,
         hourly_gross: Number.isNaN(hourly) ? null : hourly,
+        included_traffic: row.included_traffic !== null && row.included_traffic !== undefined && row.included_traffic !== '' && !Number.isNaN(Number(row.included_traffic))
+          ? Number(row.included_traffic)
+          : null,
         currency: String(row.currency || '')
       };
 
@@ -603,6 +611,9 @@
       exact = {
         monthly_gross: Number.isNaN(monthly) ? null : monthly,
         hourly_gross: Number.isNaN(hourly) ? null : hourly,
+        included_traffic: row.included_traffic !== null && row.included_traffic !== undefined && row.included_traffic !== '' && !Number.isNaN(Number(row.included_traffic))
+          ? Number(row.included_traffic)
+          : null,
         currency: String(row.currency || '')
       };
     });
@@ -814,6 +825,9 @@
   }
 
   function isServerAvailableInLocation(type, locationName) {
+    if (type && Boolean(type.deprecated)) {
+      return false;
+    }
     const allowed = type && Array.isArray(type.available_locations)
       ? type.available_locations.map(function(v) { return String(v); })
       : [];
@@ -1063,7 +1077,7 @@
     const locationName = getSelectedLocationName();
     const grouped = {};
     types.forEach(function(type) {
-      const categoryKey = getServerTypeCategory(type.name, type.cpu_type || type.cpuType || '');
+      const categoryKey = getServerTypeCategory(type.name, type.cpu_type || type.cpuType || '', type.category || '');
       if (!grouped[categoryKey]) grouped[categoryKey] = [];
       grouped[categoryKey].push(type);
     });
@@ -1085,7 +1099,7 @@
 
     if (categoryKeys.indexOf(selectedServerCategory) === -1) {
       selectedServerCategory = currentType
-        ? getServerTypeCategory(currentType.name, currentType.cpu_type || currentType.cpuType || '')
+        ? getServerTypeCategory(currentType.name, currentType.cpu_type || currentType.cpuType || '', currentType.category || '')
         : categoryKeys[0];
     }
 
@@ -1093,33 +1107,79 @@
       selectedServerCategory = categoryKeys[0];
     }
 
-    const selectedCategoryAllTypes = grouped[selectedServerCategory] || [];
-    const selectedCategoryArchitectures = collectCategoryArchitectures(selectedCategoryAllTypes);
-    let selectedArch = String(selectedCategoryArchitecture[selectedServerCategory] || '');
-    if (selectedCategoryArchitectures.length && selectedCategoryArchitectures.indexOf(selectedArch) === -1) {
-      selectedArch = selectedCategoryArchitectures[0];
-    }
-    if (!selectedCategoryArchitectures.length) {
-      selectedArch = '';
-    }
-    selectedCategoryArchitecture[selectedServerCategory] = selectedArch;
+    function resolveCategoryView(categoryKey) {
+      const allTypes = grouped[categoryKey] || [];
+      const architectures = collectCategoryArchitectures(allTypes);
+      let arch = String(selectedCategoryArchitecture[categoryKey] || '');
+      if (architectures.length && architectures.indexOf(arch) === -1) {
+        arch = architectures[0];
+      }
+      if (!architectures.length) {
+        arch = '';
+      }
 
-    let selectedCategoryTypes = selectedCategoryAllTypes.slice();
-    if (selectedArch) {
-      selectedCategoryTypes = selectedCategoryTypes.filter(function(type) {
-        return normalizeArchitectureValue(type.architecture || type.architecture_raw || '') === selectedArch;
+      let filtered = allTypes.slice();
+      if (arch) {
+        filtered = filtered.filter(function(type) {
+          return normalizeArchitectureValue(type.architecture || type.architecture_raw || '') === arch;
+        });
+      }
+      if (!filtered.length) {
+        filtered = allTypes.slice();
+      }
+
+      let active = filtered.filter(function(type) {
+        return isServerAvailableInLocation(type, locationName);
       });
-    }
-    if (!selectedCategoryTypes.length) {
-      selectedCategoryTypes = selectedCategoryAllTypes.slice();
+
+      if (!active.length) {
+        const activeInCategory = allTypes.filter(function(type) {
+          return isServerAvailableInLocation(type, locationName);
+        });
+        if (activeInCategory.length) {
+          const fallbackArch = normalizeArchitectureValue(activeInCategory[0].architecture || activeInCategory[0].architecture_raw || '');
+          if (fallbackArch) {
+            arch = fallbackArch;
+            filtered = allTypes.filter(function(type) {
+              return normalizeArchitectureValue(type.architecture || type.architecture_raw || '') === arch;
+            });
+            if (!filtered.length) {
+              filtered = allTypes.slice();
+            }
+            active = filtered.filter(function(type) {
+              return isServerAvailableInLocation(type, locationName);
+            });
+          } else {
+            filtered = allTypes.slice();
+            active = activeInCategory;
+          }
+        }
+      }
+
+      selectedCategoryArchitecture[categoryKey] = arch;
+      return { allTypes: allTypes, filteredTypes: filtered, activeTypes: active, selectedArch: arch };
     }
 
-    const activeTypes = selectedCategoryTypes.filter(function(type) {
-      return isServerAvailableInLocation(type, locationName);
-    });
+    let categoryView = resolveCategoryView(selectedServerCategory);
+    if (!categoryView.activeTypes.length) {
+      const firstCategoryWithActive = categoryKeys.find(function(key) {
+        return resolveCategoryView(key).activeTypes.length > 0;
+      });
+      if (firstCategoryWithActive) {
+        selectedServerCategory = firstCategoryWithActive;
+        categoryView = resolveCategoryView(selectedServerCategory);
+      }
+    }
+
+    const selectedCategoryAllTypes = categoryView.allTypes;
+    const selectedCategoryTypes = categoryView.filteredTypes;
+    const activeTypes = categoryView.activeTypes;
 
     let selectedName = '';
-    if (selectedCategoryTypes.some(function(type) { return String(type.name || '') === current; })) {
+    if (
+      selectedCategoryTypes.some(function(type) { return String(type.name || '') === current; })
+      && activeTypes.some(function(type) { return String(type.name || '') === current; })
+    ) {
       selectedName = current;
     } else if (activeTypes.length) {
       selectedName = String(activeTypes[0].name || '');
@@ -1157,6 +1217,7 @@
         const availableCount = typesInCategory.filter(function(type) {
           return isServerAvailableInLocation(type, locationName);
         }).length;
+        const categoryHasActive = availableCount > 0;
         const isActiveCategory = key === selectedServerCategory;
         const architectures = collectCategoryArchitectures(typesInCategory);
         const archSelected = String(selectedCategoryArchitecture[key] || architectures[0] || '');
@@ -1164,8 +1225,11 @@
 
         chunks.push('<div class="col-12 col-lg-4">');
         chunks.push('<div class="order-hetzner-server-type-category-card' + (isActiveCategory ? ' is-selected' : '') + '">');
+        const categoryBtnClass = isActiveCategory
+          ? 'btn btn-primary'
+          : (categoryHasActive ? 'btn btn-outline-secondary' : 'btn btn-outline-secondary disabled opacity-50');
         chunks.push(
-          '<button type="button" class="' + (isActiveCategory ? 'btn btn-primary' : 'btn btn-outline-secondary') + ' w-100 text-start order-hetzner-server-category-btn" data-category="' + esc(key) + '">'
+          '<button type="button" class="' + categoryBtnClass + ' w-100 text-start order-hetzner-server-category-btn" data-category="' + esc(key) + '" data-active="' + (categoryHasActive ? '1' : '0') + '">'
             + '<div class="fw-semibold">' + esc(meta.title || key) + '</div>'
             + '<div class="small mt-1">' + esc(meta.description || '') + '</div>'
           + '</button>'
@@ -1219,7 +1283,10 @@
         const monthlyText = (exactPair.monthly !== null)
           ? formatPrice(exactPair.monthly, (exactRow && exactRow.currency) || type.price_currency)
           : ((fallbackPair.monthly !== null) ? ('from ' + formatPrice(fallbackPair.monthly, type.price_currency)) : '-');
-        const trafficText = formatIncludedTraffic(type.included_traffic);
+        const trafficBytes = (exactRow && exactRow.included_traffic !== null)
+          ? exactRow.included_traffic
+          : (type.included_traffic !== null && type.included_traffic !== undefined ? type.included_traffic : null);
+        const trafficText = formatIncludedTraffic(trafficBytes);
 
         const rowClass = 'order-hetzner-server-type-table-row order-hetzner-server-type-btn'
           + (isSelected ? ' is-selected' : '')
@@ -1245,6 +1312,7 @@
     wrap.innerHTML = chunks.join('');
     wrap.querySelectorAll('.order-hetzner-server-category-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
+        if (String(btn.getAttribute('data-active') || '1') !== '1') return;
         const key = String(btn.getAttribute('data-category') || '');
         if (!key) return;
         if (key === selectedServerCategory) return;
@@ -1290,7 +1358,7 @@
           return String(type.name || '') === value;
         }) || null;
         if (selectedType) {
-          selectedServerCategory = getServerTypeCategory(selectedType.name, selectedType.cpu_type || selectedType.cpuType || '');
+          selectedServerCategory = getServerTypeCategory(selectedType.name, selectedType.cpu_type || selectedType.cpuType || '', selectedType.category || '');
           const selectedArchValue = normalizeArchitectureValue(selectedType.architecture || selectedType.architecture_raw || '');
           if (selectedArchValue) {
             selectedCategoryArchitecture[selectedServerCategory] = selectedArchValue;
@@ -1326,10 +1394,15 @@
     const type = getSelectedType();
     const current = String(input.value || cfg.location || '').trim();
     let selectedName = '';
-    if (rows.some(function(row) { return String(row.name || '') === current; })) {
+    if (rows.some(function(row) {
+      return String(row.name || '') === current && isServerAvailableInLocation(type, String(row.name || ''));
+    })) {
       selectedName = current;
     } else {
-      selectedName = rows.length ? String(rows[0].name || '') : '';
+      const firstActive = rows.find(function(row) {
+        return isServerAvailableInLocation(type, String(row.name || ''));
+      });
+      selectedName = firstActive ? String(firstActive.name || '') : (rows.length ? String(rows[0].name || '') : '');
     }
     input.value = selectedName;
 

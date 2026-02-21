@@ -752,7 +752,10 @@ class Service
                 'cores' => (int) ($type['cores'] ?? 0),
                 'memory' => (int) ($type['memory'] ?? 0),
                 'disk' => (int) ($type['disk'] ?? 0),
-                'included_traffic' => isset($type['included_traffic']) && is_numeric($type['included_traffic']) ? (float) $type['included_traffic'] : null,
+                'included_traffic' => isset($pricing['from_included_traffic']) && is_numeric($pricing['from_included_traffic'])
+                    ? (float) $pricing['from_included_traffic']
+                    : (isset($type['included_traffic']) && is_numeric($type['included_traffic']) ? (float) $type['included_traffic'] : null),
+                'category' => (string) ($type['category'] ?? ''),
                 'cpu_type' => (string) ($type['cpu_type'] ?? ''),
                 'architecture' => $this->normalizeArchitectureValue($type['architecture'] ?? ''),
                 'architecture_raw' => (string) ($type['architecture'] ?? ''),
@@ -927,6 +930,9 @@ class Service
                     if (trim((string) ($existing['cpu_type'] ?? '')) === '' && trim((string) ($type['cpu_type'] ?? '')) !== '') {
                         $existing['cpu_type'] = (string) $type['cpu_type'];
                     }
+                    if (trim((string) ($existing['category'] ?? '')) === '' && trim((string) ($type['category'] ?? '')) !== '') {
+                        $existing['category'] = (string) $type['category'];
+                    }
                     $existingTraffic = isset($existing['included_traffic']) && is_numeric($existing['included_traffic'])
                         ? (float) $existing['included_traffic']
                         : null;
@@ -988,10 +994,12 @@ class Service
                         continue;
                     }
 
-                    $key = (string) ($image['name'] ?? '');
-                    if ($key === '') {
+                    $name = (string) ($image['name'] ?? '');
+                    if ($name === '') {
                         continue;
                     }
+                    $archKey = $this->normalizeArchitectureValue($image['architecture'] ?? ($image['architecture_raw'] ?? ''));
+                    $key = $name . '|' . $archKey;
 
                     if (!isset($mergedImages[$key])) {
                         $image['available_in_projects'] = [$project['ref']];
@@ -2839,26 +2847,17 @@ class Service
         $currency = $fallbackCurrency;
         $byLocation = [];
 
-        foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-            if (strtolower(trim((string) ($row['type'] ?? ''))) !== $type) {
-                continue;
-            }
-
-            $hourly = $row['price_hourly'] ?? null;
-            $monthly = $row['price_monthly'] ?? null;
-            $hourlyCurrency = $this->extractPriceCurrency($hourly);
-            $monthlyCurrency = $this->extractPriceCurrency($monthly);
+        $ingestPriceRow = function (array $row, $locationValue, $hourlyValue, $monthlyValue) use (&$currency, &$fromHourly, &$fromMonthly, &$byLocation): void {
+            $hourlyCurrency = $this->extractPriceCurrency($hourlyValue);
+            $monthlyCurrency = $this->extractPriceCurrency($monthlyValue);
             if ($hourlyCurrency !== '') {
                 $currency = $hourlyCurrency;
             } elseif ($monthlyCurrency !== '') {
                 $currency = $monthlyCurrency;
             }
 
-            $hourlyGross = $this->extractPriceAmount($hourly);
-            $monthlyGross = $this->extractPriceAmount($monthly);
+            $hourlyGross = $this->extractPriceAmount($hourlyValue);
+            $monthlyGross = $this->extractPriceAmount($monthlyValue);
 
             if ($hourlyGross !== null && ($fromHourly === null || $hourlyGross < $fromHourly)) {
                 $fromHourly = $hourlyGross;
@@ -2867,9 +2866,9 @@ class Service
                 $fromMonthly = $monthlyGross;
             }
 
-            $location = $this->extractLocationName($row['location'] ?? '');
+            $location = $this->extractLocationName($locationValue);
             if ($location === '') {
-                continue;
+                return;
             }
 
             if (!isset($byLocation[$location])) {
@@ -2879,7 +2878,7 @@ class Service
                     'monthly_gross' => $monthlyGross,
                     'currency' => $currency,
                 ];
-                continue;
+                return;
             }
 
             $existing = $byLocation[$location];
@@ -2894,6 +2893,38 @@ class Service
             }
             $existing['currency'] = $currency;
             $byLocation[$location] = $existing;
+        };
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if (strtolower(trim((string) ($row['type'] ?? ''))) !== $type) {
+                continue;
+            }
+            // Hetzner returns `primary_ips` with nested `prices[]` rows.
+            if (isset($row['prices']) && is_array($row['prices'])) {
+                foreach ($row['prices'] as $priceRow) {
+                    if (!is_array($priceRow)) {
+                        continue;
+                    }
+                    $ingestPriceRow(
+                        $priceRow,
+                        $priceRow['location'] ?? '',
+                        $priceRow['price_hourly'] ?? null,
+                        $priceRow['price_monthly'] ?? null
+                    );
+                }
+                continue;
+            }
+
+            // Backward-compatible support for flat row shapes.
+            $ingestPriceRow(
+                $row,
+                $row['location'] ?? '',
+                $row['price_hourly'] ?? null,
+                $row['price_monthly'] ?? null
+            );
         }
 
         ksort($byLocation);
@@ -3050,6 +3081,7 @@ class Service
                 'currency' => 'EUR',
                 'from_hourly_gross' => null,
                 'from_monthly_gross' => null,
+                'from_included_traffic' => null,
                 'location_prices' => [],
             ];
         }
@@ -3057,6 +3089,7 @@ class Service
         $currency = 'EUR';
         $fromHourlyGross = null;
         $fromMonthlyGross = null;
+        $fromIncludedTraffic = null;
         $locationPrices = [];
 
         foreach ($prices as $row) {
@@ -3083,6 +3116,10 @@ class Service
             if ($monthlyGross !== null && ($fromMonthlyGross === null || $monthlyGross < $fromMonthlyGross)) {
                 $fromMonthlyGross = $monthlyGross;
             }
+            $includedTraffic = isset($row['included_traffic']) && is_numeric($row['included_traffic']) ? (float) $row['included_traffic'] : null;
+            if ($includedTraffic !== null && ($fromIncludedTraffic === null || $includedTraffic < $fromIncludedTraffic)) {
+                $fromIncludedTraffic = $includedTraffic;
+            }
 
             $locationPrices[] = [
                 'location' => $this->extractLocationName($row['location'] ?? ''),
@@ -3090,6 +3127,7 @@ class Service
                 'hourly_gross' => $hourlyGross,
                 'monthly_net' => is_array($monthly) && isset($monthly['net']) && is_numeric($monthly['net']) ? (float) $monthly['net'] : null,
                 'monthly_gross' => $monthlyGross,
+                'included_traffic' => $includedTraffic,
                 'currency' => $currency,
             ];
         }
@@ -3098,6 +3136,7 @@ class Service
             'currency' => $currency,
             'from_hourly_gross' => $fromHourlyGross,
             'from_monthly_gross' => $fromMonthlyGross,
+            'from_included_traffic' => $fromIncludedTraffic,
             'location_prices' => $locationPrices,
         ];
     }
@@ -3121,6 +3160,12 @@ class Service
         if ($fromMonthly === null || ($incomingFromMonthly !== null && $incomingFromMonthly < $fromMonthly)) {
             $fromMonthly = $incomingFromMonthly;
         }
+        $baseFromIncludedTraffic = isset($base['from_included_traffic']) && is_numeric($base['from_included_traffic']) ? (float) $base['from_included_traffic'] : null;
+        $incomingFromIncludedTraffic = isset($incoming['from_included_traffic']) && is_numeric($incoming['from_included_traffic']) ? (float) $incoming['from_included_traffic'] : null;
+        $fromIncludedTraffic = $baseFromIncludedTraffic;
+        if ($fromIncludedTraffic === null || ($incomingFromIncludedTraffic !== null && $incomingFromIncludedTraffic < $fromIncludedTraffic)) {
+            $fromIncludedTraffic = $incomingFromIncludedTraffic;
+        }
 
         $mergedByLocation = [];
         foreach ([(array) ($base['location_prices'] ?? []), (array) ($incoming['location_prices'] ?? [])] as $rows) {
@@ -3142,6 +3187,7 @@ class Service
                     : $this->extractPriceAmount($row['price_monthly'] ?? null);
                 $hourlyNet = isset($row['hourly_net']) && is_numeric($row['hourly_net']) ? (float) $row['hourly_net'] : null;
                 $monthlyNet = isset($row['monthly_net']) && is_numeric($row['monthly_net']) ? (float) $row['monthly_net'] : null;
+                $includedTraffic = isset($row['included_traffic']) && is_numeric($row['included_traffic']) ? (float) $row['included_traffic'] : null;
                 $rowCurrency = trim((string) ($row['currency'] ?? '')) ?: $currency;
 
                 if (!isset($mergedByLocation[$location])) {
@@ -3151,6 +3197,7 @@ class Service
                         'hourly_gross' => $hourlyGross,
                         'monthly_net' => $monthlyNet,
                         'monthly_gross' => $monthlyGross,
+                        'included_traffic' => $includedTraffic,
                         'currency' => $rowCurrency,
                     ];
                 } else {
@@ -3159,6 +3206,7 @@ class Service
                     $existingMonthly = isset($existing['monthly_gross']) && is_numeric($existing['monthly_gross']) ? (float) $existing['monthly_gross'] : null;
                     $existingHourlyNet = isset($existing['hourly_net']) && is_numeric($existing['hourly_net']) ? (float) $existing['hourly_net'] : null;
                     $existingMonthlyNet = isset($existing['monthly_net']) && is_numeric($existing['monthly_net']) ? (float) $existing['monthly_net'] : null;
+                    $existingIncludedTraffic = isset($existing['included_traffic']) && is_numeric($existing['included_traffic']) ? (float) $existing['included_traffic'] : null;
 
                     if ($hourlyGross !== null && ($existingHourly === null || $hourlyGross < $existingHourly)) {
                         $existing['hourly_gross'] = $hourlyGross;
@@ -3172,6 +3220,9 @@ class Service
                     if ($monthlyNet !== null && ($existingMonthlyNet === null || $monthlyNet < $existingMonthlyNet)) {
                         $existing['monthly_net'] = $monthlyNet;
                     }
+                    if ($includedTraffic !== null && ($existingIncludedTraffic === null || $includedTraffic < $existingIncludedTraffic)) {
+                        $existing['included_traffic'] = $includedTraffic;
+                    }
                     if ($rowCurrency !== '') {
                         $existing['currency'] = $rowCurrency;
                     }
@@ -3184,11 +3235,15 @@ class Service
         foreach ($mergedByLocation as $row) {
             $hourly = isset($row['hourly_gross']) && is_numeric($row['hourly_gross']) ? (float) $row['hourly_gross'] : null;
             $monthly = isset($row['monthly_gross']) && is_numeric($row['monthly_gross']) ? (float) $row['monthly_gross'] : null;
+            $includedTraffic = isset($row['included_traffic']) && is_numeric($row['included_traffic']) ? (float) $row['included_traffic'] : null;
             if ($hourly !== null && ($fromHourly === null || $hourly < $fromHourly)) {
                 $fromHourly = $hourly;
             }
             if ($monthly !== null && ($fromMonthly === null || $monthly < $fromMonthly)) {
                 $fromMonthly = $monthly;
+            }
+            if ($includedTraffic !== null && ($fromIncludedTraffic === null || $includedTraffic < $fromIncludedTraffic)) {
+                $fromIncludedTraffic = $includedTraffic;
             }
         }
 
@@ -3198,6 +3253,7 @@ class Service
             'currency' => $currency,
             'from_hourly_gross' => $fromHourly,
             'from_monthly_gross' => $fromMonthly,
+            'from_included_traffic' => $fromIncludedTraffic,
             'location_prices' => array_values($mergedByLocation),
         ];
     }
