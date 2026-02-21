@@ -276,6 +276,35 @@
     return { hourly: hourly, monthly: monthly };
   }
 
+  const FLAG_SVGS = {
+    DE: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><rect width="24" height="16" fill="#FFCE00"/><rect width="24" height="10.67" fill="#DD0000"/><rect width="24" height="5.33" fill="#000000"/></svg>',
+    US: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><rect width="24" height="16" fill="#B22234"/><rect y="2" width="24" height="2" fill="#FFFFFF"/><rect y="6" width="24" height="2" fill="#FFFFFF"/><rect y="10" width="24" height="2" fill="#FFFFFF"/><rect y="14" width="24" height="2" fill="#FFFFFF"/><rect width="10" height="7" fill="#3C3B6E"/><circle cx="2" cy="2" r="0.6" fill="#FFFFFF"/><circle cx="4" cy="3.5" r="0.6" fill="#FFFFFF"/><circle cx="6" cy="2" r="0.6" fill="#FFFFFF"/><circle cx="8" cy="3.5" r="0.6" fill="#FFFFFF"/></svg>',
+    FI: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><rect width="24" height="16" fill="#FFFFFF"/><rect x="7" width="4" height="16" fill="#003580"/><rect y="6" width="24" height="4" fill="#003580"/></svg>',
+    SG: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><rect width="24" height="8" fill="#EF3340"/><rect y="8" width="24" height="8" fill="#FFFFFF"/><circle cx="6.5" cy="4" r="2.2" fill="#FFFFFF"/><circle cx="7.3" cy="4" r="1.8" fill="#EF3340"/><circle cx="10.3" cy="2.6" r="0.35" fill="#FFFFFF"/><circle cx="11.2" cy="3.5" r="0.35" fill="#FFFFFF"/><circle cx="11.2" cy="4.7" r="0.35" fill="#FFFFFF"/><circle cx="10.3" cy="5.6" r="0.35" fill="#FFFFFF"/><circle cx="9.1" cy="4.1" r="0.35" fill="#FFFFFF"/></svg>'
+  };
+
+  const DEFAULT_FLAG_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><rect width="24" height="16" rx="2" ry="2" fill="#E5E7EB"/><circle cx="12" cy="8" r="4.2" fill="#9CA3AF"/><path d="M7.8 8h8.4M12 3.8v8.4" stroke="#E5E7EB" stroke-width="1"/></svg>';
+
+  function normalizeCountryCode(value) {
+    const raw = String(value || '').trim().toUpperCase();
+    if (/^[A-Z]{2}$/.test(raw)) return raw;
+
+    const byName = {
+      GERMANY: 'DE',
+      UNITED_STATES: 'US',
+      USA: 'US',
+      FINLAND: 'FI',
+      SINGAPORE: 'SG'
+    };
+    const key = raw.replace(/\s+/g, '_');
+    return byName[key] || '';
+  }
+
+  function getFlagSvg(countryCode) {
+    const code = normalizeCountryCode(countryCode);
+    return FLAG_SVGS[code] || DEFAULT_FLAG_SVG;
+  }
+
   function parseIdList(value) {
     if (!value) return [];
     return String(value).split(',').map(function(v) { return parseInt(v.trim(), 10); }).filter(function(v) { return Number.isInteger(v) && v > 0; });
@@ -808,6 +837,8 @@
     rows.forEach(function(location) {
       const name = String(location.name || '');
       const title = name + (location.city ? (' (' + location.city + ')') : '');
+      const countryCode = normalizeCountryCode(location.country);
+      const flagSvg = getFlagSvg(countryCode);
       const priceRow = findLocationPrice(((type && type.pricing ? type.pricing.location_prices : []) || []), name);
       const pair = priceRow ? normalizeRatePair(priceRow.hourly_gross, priceRow.monthly_gross) : { hourly: null, monthly: null };
       const priceText = (pair.hourly !== null || pair.monthly !== null)
@@ -817,7 +848,10 @@
       const btnClass = active ? 'btn btn-primary text-start' : 'btn btn-outline-secondary text-start';
       cards.push(
         '<button type="button" class="' + btnClass + ' order-hetzner-location-btn" data-location="' + esc(name) + '" style="min-width: 220px;">'
-          + '<div class="fw-semibold">' + esc(title) + '</div>'
+          + '<div class="d-flex align-items-center gap-2">'
+            + '<span class="d-inline-flex border rounded" style="overflow:hidden;line-height:0;" title="' + esc(countryCode || 'N/A') + '">' + flagSvg + '</span>'
+            + '<div class="fw-semibold">' + esc(title) + '</div>'
+          + '</div>'
           + '<div class="small">' + esc(priceText) + '</div>'
         + '</button>'
       );
