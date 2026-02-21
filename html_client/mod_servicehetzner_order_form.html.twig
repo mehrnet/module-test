@@ -180,7 +180,7 @@
     border-radius: 0.5rem;
     background: var(--bs-body-bg);
     padding: 0.85rem;
-    min-height: 100%;
+    width: 100%;
   }
   .order-hetzner-server-type-category-card.is-selected {
     border-color: var(--bs-primary);
@@ -1296,7 +1296,7 @@
       if (!keys.length) return;
 
       chunks.push('<div class="order-hetzner-server-type-group-title">' + esc(sectionTitles[section] || section) + '</div>');
-      chunks.push('<div class="row g-2 mb-2">');
+      chunks.push('<div class="d-flex flex-column gap-2 mb-2">');
       keys.forEach(function(key) {
         const meta = getServerTypeCategoryMeta(key);
         const typesInCategory = grouped[key] || [];
@@ -1309,7 +1309,6 @@
         const archSelected = String(selectedCategoryArchitecture[key] || architectures[0] || '');
         selectedCategoryArchitecture[key] = archSelected;
 
-        chunks.push('<div class="col-12 col-lg-4">');
         chunks.push('<div class="order-hetzner-server-type-category-card' + (isActiveCategory ? ' is-selected' : '') + '">');
         const categoryBtnClass = isActiveCategory
           ? 'btn btn-primary'
@@ -1341,7 +1340,6 @@
           });
           chunks.push('</div>');
         }
-        chunks.push('</div>');
         chunks.push('</div>');
       });
       chunks.push('</div>');
