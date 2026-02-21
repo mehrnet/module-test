@@ -1607,9 +1607,17 @@
     updateBillingSummary();
 
     function refreshCurrencyRates() {
+      const rerenderPricingViews = function() {
+        if (catalog && Array.isArray(catalog.server_types) && catalog.server_types.length) {
+          refreshDependent();
+        } else {
+          renderOptionPricingHints();
+          updateBillingSummary();
+        }
+      };
+
       if (!billingCurrencyCode) {
-        updateBillingSummary();
-        renderOptionPricingHints();
+        rerenderPricingViews();
         return;
       }
 
@@ -1619,15 +1627,12 @@
 
         API.guest.post('currency/get', { code: 'EUR' }, function(eurResult) {
           setCurrencyRate('EUR', eurResult && eurResult.conversion_rate);
-          renderOptionPricingHints();
-          updateBillingSummary();
+          rerenderPricingViews();
         }, function() {
-          renderOptionPricingHints();
-          updateBillingSummary();
+          rerenderPricingViews();
         });
       }, function() {
-        renderOptionPricingHints();
-        updateBillingSummary();
+        rerenderPricingViews();
       });
     }
 
