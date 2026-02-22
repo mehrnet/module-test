@@ -1791,7 +1791,13 @@ class Service
             }
 
             try {
-                $order = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => (int) $service->order_id]);
+                $orderBean = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => (int) $service->order_id]);
+                $order = null;
+                try {
+                    $order = $this->coerceClientOrderModel($orderBean);
+                } catch (\Throwable $e) {
+                    $order = null;
+                }
                 if (!$order instanceof \Model_ClientOrder) {
                     continue;
                 }
@@ -2474,7 +2480,14 @@ class Service
         $balance = max(0, (int) ($state['hours_balance'] ?? 0));
         $autoSuspend = $this->parseBool($state['auto_suspend_on_exhaustion'] ?? ($summary['auto_suspend_on_exhaustion'] ? '1' : '0'));
         if ($balance <= 0 && $autoSuspend && (string) ($service->status ?? '') === 'active') {
-            $order = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => (int) $service->order_id]);
+            $orderBean = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => (int) $service->order_id]);
+            $order = null;
+            try {
+                $order = $this->coerceClientOrderModel($orderBean);
+            } catch (\Throwable $e) {
+                $order = null;
+            }
+
             if ($order instanceof \Model_ClientOrder) {
                 try {
                     if (!empty($service->hcloud_server_id)) {
