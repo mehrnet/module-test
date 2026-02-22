@@ -3885,13 +3885,11 @@ class Service
     private function extractServerTypeAvailableLocations(array $type, array $pricing): array
     {
         $locations = [];
-        $hasTypeLocations = false;
 
         foreach ((array) ($type['locations'] ?? []) as $row) {
             if (is_scalar($row)) {
                 $name = trim((string) $row);
                 if ($name !== '') {
-                    $hasTypeLocations = true;
                     $locations[$name] = $name;
                 }
                 continue;
@@ -3913,21 +3911,7 @@ class Service
                 }
             }
 
-            $hasTypeLocations = true;
             $locations[$name] = $name;
-        }
-
-        // Fallback only if Hetzner omitted `server_type.locations`.
-        if (!$hasTypeLocations) {
-            foreach ((array) ($pricing['location_prices'] ?? []) as $entry) {
-                if (!is_array($entry)) {
-                    continue;
-                }
-                $name = $this->extractLocationName($entry['location'] ?? '');
-                if ($name !== '') {
-                    $locations[$name] = $name;
-                }
-            }
         }
 
         ksort($locations);
