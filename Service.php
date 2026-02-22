@@ -119,6 +119,11 @@ class Service
      *
      * @return \Model_ServiceHetzner
      */
+    public function create(\Model_ClientOrder $order, $service = null)
+    {
+        return $this->action_create($order);
+    }
+
     public function action_create(\Model_ClientOrder $order)
     {
         $this->ensureSchema();
@@ -157,6 +162,11 @@ class Service
         $this->di['db']->store($service);
 
         return $service;
+    }
+
+    public function activate(\Model_ClientOrder $order, $service = null): bool
+    {
+        return $this->action_activate($order);
     }
 
     public function action_activate(\Model_ClientOrder $order): bool
@@ -280,6 +290,11 @@ class Service
         throw new \FOSSBilling\InformationException($message);
     }
 
+    public function suspend(\Model_ClientOrder $order, $service = null): bool
+    {
+        return $this->action_suspend($order);
+    }
+
     public function action_suspend(\Model_ClientOrder $order): bool
     {
         $service = $this->getServiceByOrder($order);
@@ -293,6 +308,11 @@ class Service
         $this->di['db']->store($service);
 
         return true;
+    }
+
+    public function unsuspend(\Model_ClientOrder $order, $service = null): bool
+    {
+        return $this->action_unsuspend($order);
     }
 
     public function action_unsuspend(\Model_ClientOrder $order): bool
@@ -313,6 +333,11 @@ class Service
         return true;
     }
 
+    public function renew(\Model_ClientOrder $order, $service = null): bool
+    {
+        return $this->action_renew($order);
+    }
+
     public function action_renew(\Model_ClientOrder $order): bool
     {
         $service = $this->getServiceByOrder($order);
@@ -320,6 +345,11 @@ class Service
         $this->di['db']->store($service);
 
         return true;
+    }
+
+    public function cancel(\Model_ClientOrder $order, $service = null): bool
+    {
+        return $this->action_cancel($order);
     }
 
     public function action_cancel(\Model_ClientOrder $order): bool
@@ -350,6 +380,11 @@ class Service
         return true;
     }
 
+    public function uncancel(\Model_ClientOrder $order, $service = null): bool
+    {
+        return $this->action_uncancel($order);
+    }
+
     public function action_uncancel(\Model_ClientOrder $order): bool
     {
         $service = $this->getServiceByOrder($order);
@@ -362,6 +397,11 @@ class Service
         $this->di['db']->store($service);
 
         return true;
+    }
+
+    public function delete(\Model_ClientOrder $order, $service = null): bool
+    {
+        return $this->action_delete($order);
     }
 
     public function action_delete(\Model_ClientOrder $order): bool
