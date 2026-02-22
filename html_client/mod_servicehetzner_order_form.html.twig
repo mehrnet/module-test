@@ -1716,7 +1716,11 @@
   }
 
   function loadCatalog() {
-    API.guest.post('servicehetzner/catalog_get', { refresh: '1', project_ref: cfg.projectRef || '' }, function(result) {
+    API.guest.post('servicehetzner/catalog_get', {
+      refresh: '1',
+      project_ref: cfg.projectRef || '',
+      catalog_mode: (cfg.projectRef && String(cfg.projectRef).trim() !== '') ? 'project' : 'shared'
+    }, function(result) {
       if (result && result.ok === false) {
         FOSSBilling.message(result.message || 'Failed to load Hetzner catalog', 'error');
         return;

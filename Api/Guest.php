@@ -12,12 +12,18 @@ class Guest extends \Api_Abstract
     {
         $refresh = (string) ($data['refresh'] ?? '0') === '1';
         $projectRef = trim((string) ($data['project_ref'] ?? ''));
+        $mode = strtolower(trim((string) ($data['mode'] ?? $data['catalog_mode'] ?? '')));
 
         try {
             $service = $this->resolveService();
-            $catalog = $projectRef !== ''
-                ? $service->getProjectCatalog($projectRef, $refresh)
-                : $service->getGlobalCatalog($refresh);
+            if ($projectRef !== '') {
+                $catalog = $service->getProjectCatalog($projectRef, $refresh);
+            } elseif (in_array($mode, ['union', 'global'], true)) {
+                $catalog = $service->getGlobalCatalog($refresh);
+            } else {
+                // Default guest behavior: only show options shared across all candidate projects.
+                $catalog = $service->getSharedCatalog($refresh);
+            }
 
             return [
                 'ok' => true,

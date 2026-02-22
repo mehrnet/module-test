@@ -1164,6 +1164,257 @@ class Service
         ];
     }
 
+    public function getSharedCatalog(bool $refresh = false): array
+    {
+        $projects = $this->indexProjectsByRef($this->getModuleConfig()['projects']);
+        $projects = $this->ensureUniqueProjectPriorities($projects);
+
+        $inventoriesByProject = [];
+        $mergedOptionPricing = $this->normalizeOptionPricing([]);
+        $errors = [];
+        $loadedRefs = [];
+
+        foreach ($projects as $project) {
+            if (trim((string) ($project['api_token'] ?? '')) === '') {
+                continue;
+            }
+
+            try {
+                $inventory = is_array($project['inventory'] ?? null) ? $project['inventory'] : [];
+                if ($refresh || empty($inventory['server_types']) || empty($inventory['locations'])) {
+                    $synced = $this->syncProjectInventory($project['ref']);
+                    $inventory = $synced['inventory'];
+                }
+
+                $inventoriesByProject[] = [
+                    'project_ref' => (string) $project['ref'],
+                    'inventory' => $inventory,
+                ];
+                $loadedRefs[] = (string) $project['ref'];
+                $mergedOptionPricing = $this->mergeOptionPricing(
+                    $mergedOptionPricing,
+                    is_array($inventory['option_pricing'] ?? null) ? $inventory['option_pricing'] : $this->normalizeOptionPricing([])
+                );
+            } catch (\Throwable $e) {
+                $errors[] = [
+                    'project_ref' => (string) ($project['ref'] ?? ''),
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        if (empty($inventoriesByProject)) {
+            return [
+                'server_types' => [],
+                'locations' => [],
+                'images' => [],
+                // Firewall IDs are project-scoped and not portable in shared mode.
+                'firewalls' => [],
+                'option_pricing' => $mergedOptionPricing,
+                'projects_loaded' => $loadedRefs,
+                'errors' => $errors,
+                'synced_at' => date('c'),
+            ];
+        }
+
+        $sharedLocations = [];
+        $sharedImages = [];
+        $sharedTypes = [];
+
+        foreach ($inventoriesByProject as $index => $row) {
+            $projectRef = (string) ($row['project_ref'] ?? '');
+            $inventory = is_array($row['inventory'] ?? null) ? $row['inventory'] : [];
+
+            $locationsByName = [];
+            foreach ((array) ($inventory['locations'] ?? []) as $location) {
+                if (!is_array($location)) {
+                    continue;
+                }
+                $name = trim((string) ($location['name'] ?? ''));
+                if ($name === '') {
+                    continue;
+                }
+                $locationsByName[$name] = $location;
+            }
+
+            $imagesByKey = [];
+            foreach ((array) ($inventory['images'] ?? []) as $image) {
+                if (!is_array($image)) {
+                    continue;
+                }
+                $name = trim((string) ($image['name'] ?? ''));
+                if ($name === '') {
+                    continue;
+                }
+                $archKey = $this->normalizeArchitectureValue($image['architecture'] ?? ($image['architecture_raw'] ?? ''));
+                $key = $name . '|' . $archKey;
+                $imagesByKey[$key] = $image;
+            }
+
+            $typesByName = [];
+            foreach ((array) ($inventory['server_types'] ?? []) as $type) {
+                if (!is_array($type)) {
+                    continue;
+                }
+                $name = trim((string) ($type['name'] ?? ''));
+                if ($name === '') {
+                    continue;
+                }
+
+                $availableLocations = $this->normalizeStringList((array) ($type['available_locations'] ?? []));
+                $pricing = $this->restrictServerTypePricingToLocations(
+                    is_array($type['pricing'] ?? null) ? $type['pricing'] : [],
+                    $availableLocations
+                );
+                if (!empty($pricing['currency'])) {
+                    $type['price_currency'] = (string) $pricing['currency'];
+                }
+                $type['pricing'] = $pricing;
+                $type['price_hourly_from'] = $pricing['from_hourly_gross'] ?? ($type['price_hourly_from'] ?? null);
+                $type['price_monthly_from'] = $pricing['from_monthly_gross'] ?? ($type['price_monthly_from'] ?? null);
+                $type['available_locations'] = $availableLocations;
+                $typesByName[$name] = $type;
+            }
+
+            if ($index === 0) {
+                foreach ($locationsByName as $key => $location) {
+                    $sharedLocations[$key] = $location;
+                }
+                foreach ($imagesByKey as $key => $image) {
+                    $image['available_in_projects'] = [$projectRef];
+                    $sharedImages[$key] = $image;
+                }
+                foreach ($typesByName as $key => $type) {
+                    $type['available_in_projects'] = [$projectRef];
+                    $sharedTypes[$key] = $type;
+                }
+                continue;
+            }
+
+            foreach (array_keys($sharedLocations) as $name) {
+                if (!isset($locationsByName[$name])) {
+                    unset($sharedLocations[$name]);
+                }
+            }
+
+            foreach (array_keys($sharedImages) as $key) {
+                if (!isset($imagesByKey[$key])) {
+                    unset($sharedImages[$key]);
+                    continue;
+                }
+
+                $existing = $sharedImages[$key];
+                $existing['available_in_projects'] = array_values(array_unique(array_merge(
+                    (array) ($existing['available_in_projects'] ?? []),
+                    [$projectRef]
+                )));
+                $sharedImages[$key] = $existing;
+            }
+
+            foreach (array_keys($sharedTypes) as $key) {
+                if (!isset($typesByName[$key])) {
+                    unset($sharedTypes[$key]);
+                    continue;
+                }
+
+                $incoming = $typesByName[$key];
+                $existing = $sharedTypes[$key];
+                $existing['available_in_projects'] = array_values(array_unique(array_merge(
+                    (array) ($existing['available_in_projects'] ?? []),
+                    [$projectRef]
+                )));
+
+                if (trim((string) ($existing['cpu_type'] ?? '')) === '' && trim((string) ($incoming['cpu_type'] ?? '')) !== '') {
+                    $existing['cpu_type'] = (string) $incoming['cpu_type'];
+                }
+                if (trim((string) ($existing['category'] ?? '')) === '' && trim((string) ($incoming['category'] ?? '')) !== '') {
+                    $existing['category'] = (string) $incoming['category'];
+                }
+                if (trim((string) ($existing['architecture'] ?? '')) === '' && trim((string) ($incoming['architecture'] ?? '')) !== '') {
+                    $existing['architecture'] = (string) $incoming['architecture'];
+                }
+                if (trim((string) ($existing['architecture_raw'] ?? '')) === '' && trim((string) ($incoming['architecture_raw'] ?? '')) !== '') {
+                    $existing['architecture_raw'] = (string) $incoming['architecture_raw'];
+                }
+
+                $existing['available_locations'] = $this->intersectStringLists(
+                    (array) ($existing['available_locations'] ?? []),
+                    (array) ($incoming['available_locations'] ?? [])
+                );
+
+                $existing['pricing'] = $this->restrictServerTypePricingToLocations(
+                    $this->mergeServerTypePricing(
+                        is_array($existing['pricing'] ?? null) ? $existing['pricing'] : [],
+                        is_array($incoming['pricing'] ?? null) ? $incoming['pricing'] : []
+                    ),
+                    (array) ($existing['available_locations'] ?? [])
+                );
+                if (!empty($existing['pricing']['currency'])) {
+                    $existing['price_currency'] = (string) $existing['pricing']['currency'];
+                }
+                $existing['price_hourly_from'] = $existing['pricing']['from_hourly_gross'] ?? ($existing['price_hourly_from'] ?? null);
+                $existing['price_monthly_from'] = $existing['pricing']['from_monthly_gross'] ?? ($existing['price_monthly_from'] ?? null);
+
+                if (empty($existing['available_locations'])) {
+                    unset($sharedTypes[$key]);
+                    continue;
+                }
+
+                $sharedTypes[$key] = $existing;
+            }
+        }
+
+        $sharedLocationNames = array_keys($sharedLocations);
+        foreach ($sharedTypes as $key => $type) {
+            $availableLocations = $this->intersectStringLists(
+                (array) ($type['available_locations'] ?? []),
+                $sharedLocationNames
+            );
+            if (empty($availableLocations)) {
+                unset($sharedTypes[$key]);
+                continue;
+            }
+
+            $type['available_locations'] = $availableLocations;
+            $type['pricing'] = $this->restrictServerTypePricingToLocations(
+                is_array($type['pricing'] ?? null) ? $type['pricing'] : [],
+                $availableLocations
+            );
+            if (!empty($type['pricing']['currency'])) {
+                $type['price_currency'] = (string) $type['pricing']['currency'];
+            }
+            $type['price_hourly_from'] = $type['pricing']['from_hourly_gross'] ?? ($type['price_hourly_from'] ?? null);
+            $type['price_monthly_from'] = $type['pricing']['from_monthly_gross'] ?? ($type['price_monthly_from'] ?? null);
+            $sharedTypes[$key] = $type;
+        }
+
+        $serverTypes = array_values($sharedTypes);
+        usort($serverTypes, static function (array $a, array $b): int {
+            return strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+        });
+
+        $locations = array_values($sharedLocations);
+        usort($locations, static function (array $a, array $b): int {
+            return strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+        });
+
+        $images = array_values($sharedImages);
+        usort($images, static function (array $a, array $b): int {
+            return strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+        });
+
+        return [
+            'server_types' => $serverTypes,
+            'locations' => $locations,
+            'images' => $images,
+            'firewalls' => [],
+            'option_pricing' => $mergedOptionPricing,
+            'projects_loaded' => $loadedRefs,
+            'errors' => $errors,
+            'synced_at' => date('c'),
+        ];
+    }
+
     public function testConnection(array $data = []): array
     {
         try {
@@ -3879,6 +4130,101 @@ class Service
             'from_monthly_gross' => $fromMonthly,
             'from_included_traffic' => $fromIncludedTraffic,
             'location_prices' => array_values($mergedByLocation),
+        ];
+    }
+
+    private function normalizeStringList(array $values): array
+    {
+        $out = [];
+        foreach ($values as $value) {
+            if (!is_scalar($value)) {
+                continue;
+            }
+            $str = trim((string) $value);
+            if ($str === '') {
+                continue;
+            }
+            $out[$str] = $str;
+        }
+        ksort($out);
+
+        return array_values($out);
+    }
+
+    private function intersectStringLists(array $left, array $right): array
+    {
+        $leftMap = array_fill_keys($this->normalizeStringList($left), true);
+        $rightList = $this->normalizeStringList($right);
+
+        $out = [];
+        foreach ($rightList as $value) {
+            if (isset($leftMap[$value])) {
+                $out[] = $value;
+            }
+        }
+
+        return $out;
+    }
+
+    private function restrictServerTypePricingToLocations(array $pricing, array $allowedLocations): array
+    {
+        $allowedMap = array_fill_keys($this->normalizeStringList($allowedLocations), true);
+        $currency = trim((string) ($pricing['currency'] ?? '')) ?: 'EUR';
+        $rows = [];
+        $fromHourly = null;
+        $fromMonthly = null;
+        $fromIncludedTraffic = null;
+
+        foreach ((array) ($pricing['location_prices'] ?? []) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $location = $this->extractLocationName($row['location'] ?? '');
+            if ($location === '' || !isset($allowedMap[$location])) {
+                continue;
+            }
+
+            $hourlyNet = isset($row['hourly_net']) && is_numeric($row['hourly_net']) ? (float) $row['hourly_net'] : null;
+            $hourlyGross = isset($row['hourly_gross']) && is_numeric($row['hourly_gross'])
+                ? (float) $row['hourly_gross']
+                : $this->extractPriceAmount($row['price_hourly'] ?? null);
+            $monthlyNet = isset($row['monthly_net']) && is_numeric($row['monthly_net']) ? (float) $row['monthly_net'] : null;
+            $monthlyGross = isset($row['monthly_gross']) && is_numeric($row['monthly_gross'])
+                ? (float) $row['monthly_gross']
+                : $this->extractPriceAmount($row['price_monthly'] ?? null);
+            $includedTraffic = isset($row['included_traffic']) && is_numeric($row['included_traffic']) ? (float) $row['included_traffic'] : null;
+
+            if ($hourlyGross !== null && ($fromHourly === null || $hourlyGross < $fromHourly)) {
+                $fromHourly = $hourlyGross;
+            }
+            if ($monthlyGross !== null && ($fromMonthly === null || $monthlyGross < $fromMonthly)) {
+                $fromMonthly = $monthlyGross;
+            }
+            if ($includedTraffic !== null && ($fromIncludedTraffic === null || $includedTraffic < $fromIncludedTraffic)) {
+                $fromIncludedTraffic = $includedTraffic;
+            }
+
+            $rows[] = [
+                'location' => $location,
+                'hourly_net' => $hourlyNet,
+                'hourly_gross' => $hourlyGross,
+                'monthly_net' => $monthlyNet,
+                'monthly_gross' => $monthlyGross,
+                'included_traffic' => $includedTraffic,
+                'currency' => trim((string) ($row['currency'] ?? '')) ?: $currency,
+            ];
+        }
+
+        usort($rows, static function (array $a, array $b): int {
+            return strcmp((string) ($a['location'] ?? ''), (string) ($b['location'] ?? ''));
+        });
+
+        return [
+            'currency' => $currency,
+            'from_hourly_gross' => $fromHourly,
+            'from_monthly_gross' => $fromMonthly,
+            'from_included_traffic' => $fromIncludedTraffic,
+            'location_prices' => $rows,
         ];
     }
 
