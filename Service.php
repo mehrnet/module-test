@@ -1807,17 +1807,11 @@ class Service
                     continue;
                 }
 
-                if ((string) $service->status !== 'active') {
-                    $this->touchBillingAccountedAt($service);
-                    $this->di['db']->store($service);
+                // Prepaid billing is wall-clock based (order expiration driven by FossBilling cron),
+                // so we do not consume/suspend manually here anymore.
+                if (($summary['mode'] ?? self::BILLING_MODE_STANDARD) === self::BILLING_MODE_PREPAID_HOURS) {
+                    $processed++;
                     continue;
-                }
-
-                $delta = $this->applyHourlyConsumptionForService($service, $summary);
-                $processed++;
-                $chargedHours += max(0, (int) ($delta['charged_hours'] ?? 0));
-                if (!empty($delta['suspended'])) {
-                    $suspended++;
                 }
             } catch (\Throwable $e) {
                 $errors[] = 'Service #' . ((int) ($service->id ?? 0)) . ': ' . $e->getMessage();
@@ -1982,7 +1976,13 @@ class Service
                 continue;
             }
 
-            $invoice = $this->di['db']->findOne('Invoice', 'id = :id', [':id' => (int) $row->invoice_id]);
+            $invoiceBean = $this->di['db']->findOne('Invoice', 'id = :id', [':id' => (int) $row->invoice_id]);
+            $invoice = null;
+            try {
+                $invoice = $this->coerceInvoiceModel($invoiceBean);
+            } catch (\Throwable $e) {
+                $invoice = null;
+            }
             if (!$invoice instanceof \Model_Invoice) {
                 continue;
             }
@@ -1998,7 +1998,13 @@ class Service
                 continue;
             }
 
-            $order = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => (int) $row->order_id]);
+            $orderBean = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => (int) $row->order_id]);
+            $order = null;
+            try {
+                $order = $this->coerceClientOrderModel($orderBean);
+            } catch (\Throwable $e) {
+                $order = null;
+            }
             if (!$order instanceof \Model_ClientOrder) {
                 $row->status = 'cancelled';
                 $row->updated_at = date('Y-m-d H:i:s');
@@ -2017,10 +2023,12 @@ class Service
             $hours = max(1, (int) ($row->hours ?? 0));
             $state = $this->readBillingStateFromService($service);
             $state['hours_purchased_total'] = max(0, (int) ($state['hours_purchased_total'] ?? 0)) + $hours;
-            $state['hours_balance'] = max(0, (int) ($state['hours_balance'] ?? 0)) + $hours;
             $state['hold_reason'] = '';
             $state['hold_since'] = '';
             $state['last_topup_at'] = date('c');
+            $state['billing_clock_mode'] = 'wall_clock';
+            $this->extendPrepaidOrderExpiry($order, $hours, $service, $state);
+            $this->syncPrepaidBillingStateFromOrderExpiry($order, $state);
             $this->touchBillingState($state);
             $this->writeBillingStateToService($service, $state);
 
@@ -2165,9 +2173,50 @@ class Service
             throw new \FOSSBilling\InformationException('Invalid order instance passed to Servicehetzner action.');
         }
 
-        $model = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => $orderId]);
+        $model = null;
+        try {
+            $model = $this->di['db']->load('ClientOrder', $orderId);
+        } catch (\Throwable $e) {
+            $model = null;
+        }
+        if (!$model instanceof \Model_ClientOrder) {
+            $model = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => $orderId]);
+        }
         if (!$model instanceof \Model_ClientOrder) {
             throw new \FOSSBilling\InformationException('Client order :id was not found.', [':id' => $orderId]);
+        }
+
+        return $model;
+    }
+
+    private function coerceInvoiceModel($invoice): \Model_Invoice
+    {
+        if ($invoice instanceof \Model_Invoice) {
+            return $invoice;
+        }
+
+        $invoiceId = 0;
+        if (is_object($invoice) && isset($invoice->id) && is_numeric($invoice->id)) {
+            $invoiceId = (int) $invoice->id;
+        } elseif (is_array($invoice) && isset($invoice['id']) && is_numeric($invoice['id'])) {
+            $invoiceId = (int) $invoice['id'];
+        }
+
+        if ($invoiceId <= 0) {
+            throw new \FOSSBilling\InformationException('Invalid invoice instance passed to Servicehetzner action.');
+        }
+
+        $model = null;
+        try {
+            $model = $this->di['db']->load('Invoice', $invoiceId);
+        } catch (\Throwable $e) {
+            $model = null;
+        }
+        if (!$model instanceof \Model_Invoice) {
+            $model = $this->di['db']->findOne('Invoice', 'id = :id', [':id' => $invoiceId]);
+        }
+        if (!$model instanceof \Model_Invoice) {
+            throw new \FOSSBilling\InformationException('Invoice :id was not found.', [':id' => $invoiceId]);
         }
 
         return $model;
@@ -2317,6 +2366,79 @@ class Service
         $state['updated_at'] = date('c');
     }
 
+    private function getPrepaidOrderExpiryTimestamp(\Model_ClientOrder $order): int
+    {
+        $raw = '';
+        if (isset($order->expires_at)) {
+            $raw = trim((string) $order->expires_at);
+        }
+
+        if ($raw === '' && isset($order->activated_at)) {
+            $raw = trim((string) $order->activated_at);
+        }
+        if ($raw === '' && isset($order->created_at)) {
+            $raw = trim((string) $order->created_at);
+        }
+
+        $ts = strtotime($raw);
+
+        return $ts !== false && $ts > 0 ? $ts : 0;
+    }
+
+    private function extendPrepaidOrderExpiry(\Model_ClientOrder $order, int $hours, $service = null, array &$state = null): int
+    {
+        $hours = max(0, (int) $hours);
+        if ($hours <= 0) {
+            return $this->getPrepaidOrderExpiryTimestamp($order);
+        }
+
+        $currentExpiryTs = $this->getPrepaidOrderExpiryTimestamp($order);
+        $baseTs = max(time(), $currentExpiryTs);
+        $newExpiryTs = $baseTs + ($hours * 3600);
+
+        $order->expires_at = date('Y-m-d H:i:s', $newExpiryTs);
+        if (isset($order->updated_at)) {
+            $order->updated_at = date('Y-m-d H:i:s');
+        }
+        $this->di['db']->store($order);
+
+        if (is_array($state)) {
+            $state['expires_at'] = date('c', $newExpiryTs);
+        }
+        if ($service && is_object($service)) {
+            $service->updated_at = date('Y-m-d H:i:s');
+        }
+
+        return $newExpiryTs;
+    }
+
+    private function syncPrepaidBillingStateFromOrderExpiry(\Model_ClientOrder $order, array &$state): void
+    {
+        $purchased = max(0, (int) ($state['hours_purchased_total'] ?? 0));
+        $expiryTs = $this->getPrepaidOrderExpiryTimestamp($order);
+        if ($expiryTs <= 0) {
+            $state['hours_consumed'] = max(0, min($purchased, (int) ($state['hours_consumed'] ?? 0)));
+            $state['hours_balance'] = max(0, min($purchased, (int) ($state['hours_balance'] ?? max($purchased - ((int) ($state['hours_consumed'] ?? 0)), 0))));
+            return;
+        }
+
+        $remainingSeconds = max(0, $expiryTs - time());
+        $balance = $remainingSeconds > 0 ? (int) ceil($remainingSeconds / 3600) : 0;
+        $consumed = max(0, $purchased - $balance);
+
+        $state['billing_clock_mode'] = 'wall_clock';
+        $state['expires_at'] = date('c', $expiryTs);
+        $state['hours_consumed'] = $consumed;
+        $state['hours_balance'] = $balance;
+        if (empty($state['billing_started_at'])) {
+            if (isset($order->activated_at) && trim((string) $order->activated_at) !== '') {
+                $state['billing_started_at'] = date('c', (int) strtotime((string) $order->activated_at));
+            } else {
+                $state['billing_started_at'] = date('c');
+            }
+        }
+    }
+
     private function writeBillingStateToService($service, array $state): void
     {
         $config = $this->decodeJson((string) $service->config);
@@ -2341,6 +2463,14 @@ class Service
             if (!isset($state['currency']) || trim((string) $state['currency']) === '') {
                 $state['currency'] = (string) ($order->currency ?? '');
             }
+            if (trim((string) ($state['billing_clock_mode'] ?? '')) !== 'wall_clock') {
+                $remainingHours = max(0, (int) ($state['hours_balance'] ?? 0));
+                $state['billing_clock_mode'] = 'wall_clock';
+                if ($remainingHours > 0 && $this->getPrepaidOrderExpiryTimestamp($order) <= 0) {
+                    $this->extendPrepaidOrderExpiry($order, $remainingHours, $service, $state);
+                }
+            }
+            $this->syncPrepaidBillingStateFromOrderExpiry($order, $state);
             $this->writeBillingStateToService($service, $state);
             return;
         }
@@ -2364,6 +2494,7 @@ class Service
 
         $state = [
             'mode' => self::BILLING_MODE_PREPAID_HOURS,
+            'billing_clock_mode' => 'wall_clock',
             'hourly_rate' => $hourlyRate,
             'currency' => (string) ($order->currency ?? ''),
             'hours_purchased_total' => $initialHours,
@@ -2378,7 +2509,11 @@ class Service
             'hold_reason' => '',
             'hold_since' => '',
             'initialized_at' => date('c'),
+            'billing_started_at' => date('c'),
         ];
+
+        $this->extendPrepaidOrderExpiry($order, $initialHours, $service, $state);
+        $this->syncPrepaidBillingStateFromOrderExpiry($order, $state);
 
         $this->writeBillingStateToService($service, $state);
     }
@@ -2411,6 +2546,16 @@ class Service
         $hoursPurchased = max(0, (int) ($state['hours_purchased_total'] ?? 0));
         $hoursConsumed = max(0, (int) ($state['hours_consumed'] ?? 0));
         $hoursBalance = max(0, (int) ($state['hours_balance'] ?? max($hoursPurchased - $hoursConsumed, 0)));
+        $expiresAt = '';
+        if ($mode === self::BILLING_MODE_PREPAID_HOURS) {
+            $this->syncPrepaidBillingStateFromOrderExpiry($order, $state);
+            $hoursPurchased = max(0, (int) ($state['hours_purchased_total'] ?? $hoursPurchased));
+            $hoursConsumed = max(0, (int) ($state['hours_consumed'] ?? $hoursConsumed));
+            $hoursBalance = max(0, (int) ($state['hours_balance'] ?? $hoursBalance));
+            $expiresAt = (string) ($state['expires_at'] ?? '');
+            $this->writeBillingStateToService($service, $state);
+            $this->di['db']->store($service);
+        }
 
         return [
             'mode' => $mode,
@@ -2428,6 +2573,7 @@ class Service
             'hold_reason' => (string) ($state['hold_reason'] ?? ''),
             'hold_since' => (string) ($state['hold_since'] ?? ''),
             'updated_at' => (string) ($state['updated_at'] ?? ''),
+            'expires_at' => $expiresAt,
         ];
     }
 
@@ -2446,6 +2592,11 @@ class Service
         $state = $this->readBillingStateFromService($service);
         if ($this->normalizeBillingMode((string) ($state['mode'] ?? '')) !== self::BILLING_MODE_PREPAID_HOURS) {
             return true;
+        }
+
+        $expiresTs = strtotime((string) ($state['expires_at'] ?? ''));
+        if ($expiresTs !== false && $expiresTs > 0) {
+            return $expiresTs > time();
         }
 
         return max(0, (int) ($state['hours_balance'] ?? 0)) > 0;
