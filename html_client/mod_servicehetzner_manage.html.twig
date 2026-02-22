@@ -1,8 +1,3 @@
-{% extends "layout_default.html.twig" %}
-
-{% block meta_title %}{{ 'VPS Control'|trans }}{% endblock %}
-
-{% block content %}
 {% set order_id = order.id|default(0) %}
 
 <div class="card mb-3">
@@ -188,4 +183,3 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 {% endif %}
-{% endblock %}
