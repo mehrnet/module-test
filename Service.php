@@ -119,9 +119,9 @@ class Service
      *
      * @return \Model_ServiceHetzner
      */
-    public function create(\Model_ClientOrder $order, $service = null)
+    public function create($order, $service = null)
     {
-        return $this->action_create($order);
+        return $this->action_create($this->coerceClientOrderModel($order));
     }
 
     public function action_create(\Model_ClientOrder $order)
@@ -164,9 +164,9 @@ class Service
         return $service;
     }
 
-    public function activate(\Model_ClientOrder $order, $service = null): bool
+    public function activate($order, $service = null): bool
     {
-        return $this->action_activate($order);
+        return $this->action_activate($this->coerceClientOrderModel($order));
     }
 
     public function action_activate(\Model_ClientOrder $order): bool
@@ -290,9 +290,9 @@ class Service
         throw new \FOSSBilling\InformationException($message);
     }
 
-    public function suspend(\Model_ClientOrder $order, $service = null): bool
+    public function suspend($order, $service = null): bool
     {
-        return $this->action_suspend($order);
+        return $this->action_suspend($this->coerceClientOrderModel($order));
     }
 
     public function action_suspend(\Model_ClientOrder $order): bool
@@ -310,9 +310,9 @@ class Service
         return true;
     }
 
-    public function unsuspend(\Model_ClientOrder $order, $service = null): bool
+    public function unsuspend($order, $service = null): bool
     {
-        return $this->action_unsuspend($order);
+        return $this->action_unsuspend($this->coerceClientOrderModel($order));
     }
 
     public function action_unsuspend(\Model_ClientOrder $order): bool
@@ -333,9 +333,9 @@ class Service
         return true;
     }
 
-    public function renew(\Model_ClientOrder $order, $service = null): bool
+    public function renew($order, $service = null): bool
     {
-        return $this->action_renew($order);
+        return $this->action_renew($this->coerceClientOrderModel($order));
     }
 
     public function action_renew(\Model_ClientOrder $order): bool
@@ -347,9 +347,9 @@ class Service
         return true;
     }
 
-    public function cancel(\Model_ClientOrder $order, $service = null): bool
+    public function cancel($order, $service = null): bool
     {
-        return $this->action_cancel($order);
+        return $this->action_cancel($this->coerceClientOrderModel($order));
     }
 
     public function action_cancel(\Model_ClientOrder $order): bool
@@ -380,9 +380,9 @@ class Service
         return true;
     }
 
-    public function uncancel(\Model_ClientOrder $order, $service = null): bool
+    public function uncancel($order, $service = null): bool
     {
-        return $this->action_uncancel($order);
+        return $this->action_uncancel($this->coerceClientOrderModel($order));
     }
 
     public function action_uncancel(\Model_ClientOrder $order): bool
@@ -399,9 +399,9 @@ class Service
         return true;
     }
 
-    public function delete(\Model_ClientOrder $order, $service = null): bool
+    public function delete($order, $service = null): bool
     {
-        return $this->action_delete($order);
+        return $this->action_delete($this->coerceClientOrderModel($order));
     }
 
     public function action_delete(\Model_ClientOrder $order): bool
@@ -1890,6 +1890,31 @@ class Service
         }
 
         return $service;
+    }
+
+    private function coerceClientOrderModel($order): \Model_ClientOrder
+    {
+        if ($order instanceof \Model_ClientOrder) {
+            return $order;
+        }
+
+        $orderId = 0;
+        if (is_object($order) && isset($order->id) && is_numeric($order->id)) {
+            $orderId = (int) $order->id;
+        } elseif (is_array($order) && isset($order['id']) && is_numeric($order['id'])) {
+            $orderId = (int) $order['id'];
+        }
+
+        if ($orderId <= 0) {
+            throw new \FOSSBilling\InformationException('Invalid order instance passed to Servicehetzner action.');
+        }
+
+        $model = $this->di['db']->findOne('ClientOrder', 'id = :id', [':id' => $orderId]);
+        if (!$model instanceof \Model_ClientOrder) {
+            throw new \FOSSBilling\InformationException('Client order :id was not found.', [':id' => $orderId]);
+        }
+
+        return $model;
     }
 
     private function getOrderConfig(\Model_ClientOrder $order): array
