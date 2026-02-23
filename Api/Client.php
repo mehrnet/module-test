@@ -54,6 +54,33 @@ class Client extends \Api_Abstract
         return $this->resolveService()->createTopupInvoice($order, $hours);
     }
 
+    public function topup_quote_get($data): array
+    {
+        $order = $this->getClientOrder($data);
+        $hours = (int) ($data['hours'] ?? 0);
+        if ($hours <= 0) {
+            throw new \FOSSBilling\InformationException('hours is required and must be greater than zero.');
+        }
+
+        return $this->resolveService()->getTopupQuote($order, $hours);
+    }
+
+    public function topup_checkout($data): array
+    {
+        $order = $this->getClientOrder($data);
+        $hours = (int) ($data['hours'] ?? 0);
+        if ($hours <= 0) {
+            throw new \FOSSBilling\InformationException('hours is required and must be greater than zero.');
+        }
+
+        $mode = strtolower(trim((string) ($data['mode'] ?? 'invoice')));
+        if (!in_array($mode, ['invoice', 'wallet'], true)) {
+            throw new \FOSSBilling\InformationException('mode must be either invoice or wallet.');
+        }
+
+        return $this->resolveService()->topupCheckout($order, $hours, $mode);
+    }
+
     private function getClientOrder(array $data): \Model_ClientOrder
     {
         $orderId = (int) ($data['order_id'] ?? 0);

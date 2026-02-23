@@ -35,6 +35,24 @@
   color: var(--bs-secondary-color, #6c757d);
   font-size: .875rem;
 }
+.hetzner-topup-quote-lines {
+  display: grid;
+  gap: .4rem;
+}
+.hetzner-topup-quote-line {
+  display: flex;
+  justify-content: space-between;
+  gap: .75rem;
+  font-size: .95rem;
+}
+.hetzner-topup-quote-line .line-title {
+  color: var(--bs-secondary-color, #6c757d);
+}
+.hetzner-topup-quote-line.total {
+  font-weight: 600;
+  padding-top: .4rem;
+  border-top: 1px solid var(--bs-border-color, rgba(255,255,255,.12));
+}
 </style>
 
 <div class="card mb-3">
@@ -63,7 +81,30 @@
               <input type="number" class="form-control" id="hetzner_topup_hours" min="1" step="1" value="1">
             </div>
             <div class="col-md-8 col-lg-5 d-flex align-items-end">
-              <button type="button" class="btn btn-primary w-100" onclick="createHetznerTopupInvoice();">{{ 'Create top-up invoice'|trans }}</button>
+              <button type="button" class="btn btn-primary w-100" onclick="openHetznerTopupCheckout();">{{ 'Top up prepaid time'|trans }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal fade" id="hetzner-topup-checkout-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">{{ 'Top-up prepaid rental'|trans }}</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ 'Close'|trans }}"></button>
+            </div>
+            <div class="modal-body">
+              <div id="hetzner-topup-checkout-body" class="small text-muted">{{ 'Loading quote...'|trans }}</div>
+            </div>
+            <div class="modal-footer d-flex gap-2">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{{ 'Cancel'|trans }}</button>
+              <button type="button" class="btn btn-outline-primary" id="hetzner-topup-invoice-btn" onclick="submitHetznerTopupCheckout('invoice');">
+                {{ 'Create invoice / pay gateway'|trans }}
+              </button>
+              <button type="button" class="btn btn-primary" id="hetzner-topup-wallet-btn" onclick="submitHetznerTopupCheckout('wallet');" hidden>
+                {{ 'Pay from wallet'|trans }}
+              </button>
             </div>
           </div>
         </div>
@@ -81,6 +122,8 @@
 {% if order_id %}
 <script>
 const HETZNER_ORDER_ID = {{ order_id }};
+let HETZNER_TOPUP_QUOTE = null;
+let HETZNER_TOPUP_MODAL = null;
 
 function esc(value) {
   return String(value === null || value === undefined ? '' : value)
@@ -122,6 +165,71 @@ function formatDateTime(value) {
     } catch (e) {}
   }
   return raw;
+}
+
+function getHetznerTopupModal() {
+  const modalEl = document.getElementById('hetzner-topup-checkout-modal');
+  if (!modalEl || typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+    return null;
+  }
+  if (!HETZNER_TOPUP_MODAL) {
+    HETZNER_TOPUP_MODAL = new bootstrap.Modal(modalEl);
+  }
+  return HETZNER_TOPUP_MODAL;
+}
+
+function setTopupCheckoutButtonsBusy(isBusy) {
+  ['hetzner-topup-wallet-btn', 'hetzner-topup-invoice-btn'].forEach(function(id) {
+    const btn = document.getElementById(id);
+    if (btn) {
+      btn.disabled = !!isBusy;
+    }
+  });
+}
+
+function renderHetznerTopupQuote(quote) {
+  const body = document.getElementById('hetzner-topup-checkout-body');
+  const walletBtn = document.getElementById('hetzner-topup-wallet-btn');
+  const invoiceBtn = document.getElementById('hetzner-topup-invoice-btn');
+  if (!body || !walletBtn || !invoiceBtn) {
+    return;
+  }
+
+  const currency = String((quote && quote.currency) || '');
+  const lines = Array.isArray(quote && quote.line_items) ? quote.line_items : [];
+  const total = Number((quote && quote.total) || 0);
+  const walletBalance = Number((quote && quote.wallet_balance) || 0);
+  const canWallet = !!(quote && quote.can_pay_from_balance);
+  const isLate = !!(quote && quote.is_late);
+  const lateFeePct = Number((quote && quote.late_fee_percent) || 0);
+
+  const lineHtml = lines.map(function(line) {
+    return [
+      '<div class="hetzner-topup-quote-line">',
+      '<div class="line-title">' + esc((line && line.title) || 'Item') + '</div>',
+      '<div class="line-value">' + esc(formatMoney((line && line.total) || 0, currency)) + '</div>',
+      '</div>'
+    ].join('');
+  }).join('');
+
+  const lateHtml = (isLate && lateFeePct > 0)
+    ? '<div class="small text-warning mt-2">Late reactivation fee applies (' + esc(String(lateFeePct)) + '%).</div>'
+    : '';
+
+  body.innerHTML = [
+    '<div class="mb-2"><strong>' + esc(String((quote && quote.hours) || 0)) + 'h</strong> top-up</div>',
+    '<div class="hetzner-topup-quote-lines">',
+    lineHtml,
+    '<div class="hetzner-topup-quote-line total"><div class="line-title">Total</div><div class="line-value">' + esc(formatMoney(total, currency)) + '</div></div>',
+    '<div class="hetzner-topup-quote-line"><div class="line-title">Wallet balance</div><div class="line-value">' + esc(formatMoney(walletBalance, currency)) + '</div></div>',
+    '</div>',
+    lateHtml,
+    (!canWallet ? '<div class="small text-muted mt-2">Wallet balance is not enough for this top-up.</div>' : '')
+  ].join('');
+
+  walletBtn.hidden = !canWallet;
+  invoiceBtn.classList.toggle('btn-primary', !canWallet);
+  invoiceBtn.classList.toggle('btn-outline-primary', canWallet);
 }
 
 function renderHetznerBilling(data) {
@@ -208,7 +316,7 @@ function refreshHetznerDetails() {
   });
 }
 
-function createHetznerTopupInvoice() {
+function openHetznerTopupCheckout() {
   const input = document.getElementById('hetzner_topup_hours');
   const hours = parseInt(String((input && input.value) || ''), 10);
   if (!Number.isInteger(hours) || hours <= 0) {
@@ -216,11 +324,58 @@ function createHetznerTopupInvoice() {
     return;
   }
 
-  API.client.post('servicehetzner/topup_invoice_create', { order_id: HETZNER_ORDER_ID, hours: hours }, function(result) {
+  setTopupCheckoutButtonsBusy(true);
+  API.client.post('servicehetzner/topup_quote_get', { order_id: HETZNER_ORDER_ID, hours: hours }, function(result) {
     if (!result || result.ok === false) {
-      FOSSBilling.message((result && result.message) || 'Failed to create top-up invoice', 'error');
+      setTopupCheckoutButtonsBusy(false);
+      FOSSBilling.message((result && result.message) || 'Failed to load top-up quote', 'error');
       return;
     }
+    HETZNER_TOPUP_QUOTE = result;
+    renderHetznerTopupQuote(result);
+    setTopupCheckoutButtonsBusy(false);
+    const modal = getHetznerTopupModal();
+    if (modal) {
+      modal.show();
+    } else {
+      submitHetznerTopupCheckout(result.can_pay_from_balance ? 'wallet' : 'invoice');
+    }
+  }, function(result) {
+    setTopupCheckoutButtonsBusy(false);
+    FOSSBilling.message((result && result.message) || 'Failed to load top-up quote', 'error');
+  });
+}
+
+function createHetznerTopupInvoice() {
+  openHetznerTopupCheckout();
+}
+
+function submitHetznerTopupCheckout(mode) {
+  const input = document.getElementById('hetzner_topup_hours');
+  const hours = parseInt(String((input && input.value) || ''), 10);
+  if (!Number.isInteger(hours) || hours <= 0) {
+    FOSSBilling.message('Please enter a valid top-up hour amount.', 'error');
+    return;
+  }
+
+  setTopupCheckoutButtonsBusy(true);
+  API.client.post('servicehetzner/topup_checkout', { order_id: HETZNER_ORDER_ID, hours: hours, mode: mode }, function(result) {
+    setTopupCheckoutButtonsBusy(false);
+    if (!result || result.ok === false) {
+      FOSSBilling.message((result && result.message) || 'Top-up checkout failed', 'error');
+      return;
+    }
+
+    if (String(result.payment_mode || mode) === 'wallet') {
+      const modal = getHetznerTopupModal();
+      if (modal) {
+        modal.hide();
+      }
+      FOSSBilling.message('Top-up paid from wallet successfully.');
+      refreshHetznerDetails();
+      return;
+    }
+
     FOSSBilling.message('Top-up invoice created successfully.');
     if (result.invoice_url) {
       window.location.href = result.invoice_url;
@@ -232,7 +387,8 @@ function createHetznerTopupInvoice() {
     }
     refreshHetznerDetails();
   }, function(result) {
-    FOSSBilling.message((result && result.message) || 'Failed to create top-up invoice', 'error');
+    setTopupCheckoutButtonsBusy(false);
+    FOSSBilling.message((result && result.message) || 'Top-up checkout failed', 'error');
   });
 }
 

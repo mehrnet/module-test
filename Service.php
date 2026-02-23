@@ -1888,6 +1888,94 @@ class Service
 
     public function createTopupInvoice(\Model_ClientOrder $order, int $hours): array
     {
+        $quote = $this->buildTopupQuote($order, $hours);
+        $result = $this->createTopupInvoiceFromQuote($order, $quote);
+        unset($result['_invoice']);
+
+        return $result;
+    }
+
+    public function getTopupQuote(\Model_ClientOrder $order, int $hours): array
+    {
+        $quote = $this->buildTopupQuote($order, $hours);
+
+        return [
+            'ok' => true,
+            'order_id' => (int) $order->id,
+            'hours' => (int) ($quote['hours'] ?? 0),
+            'currency' => (string) ($quote['currency'] ?? ''),
+            'hourly_rate' => (float) ($quote['hourly_rate'] ?? 0.0),
+            'subtotal' => (float) ($quote['subtotal'] ?? 0.0),
+            'late_fee_percent' => (float) ($quote['late_fee_percent'] ?? 0.0),
+            'late_fee_amount' => (float) ($quote['late_fee_amount'] ?? 0.0),
+            'total' => (float) ($quote['total'] ?? 0.0),
+            'is_late' => !empty($quote['is_late']),
+            'wallet_balance' => (float) ($quote['wallet_balance'] ?? 0.0),
+            'can_pay_from_balance' => !empty($quote['can_pay_from_balance']),
+            'line_items' => array_values((array) ($quote['line_items_public'] ?? [])),
+        ];
+    }
+
+    public function topupCheckout(\Model_ClientOrder $order, int $hours, string $mode = 'invoice'): array
+    {
+        $mode = strtolower(trim($mode));
+        if ($mode === '') {
+            $mode = 'invoice';
+        }
+        if (!in_array($mode, ['invoice', 'wallet'], true)) {
+            throw new \FOSSBilling\InformationException('Unsupported top-up payment mode.');
+        }
+
+        $quote = $this->buildTopupQuote($order, $hours);
+
+        if ($mode === 'invoice') {
+            $result = $this->createTopupInvoiceFromQuote($order, $quote);
+            unset($result['_invoice']);
+            $result['payment_mode'] = 'invoice';
+
+            return $result;
+        }
+
+        if (empty($quote['can_pay_from_balance'])) {
+            throw new \FOSSBilling\InformationException('Insufficient wallet balance for this top-up. Create an invoice and pay via gateway.');
+        }
+
+        $result = $this->createTopupInvoiceFromQuote($order, $quote);
+        $invoice = $result['_invoice'] ?? null;
+        if (!$invoice instanceof \Model_Invoice) {
+            throw new \FOSSBilling\InformationException('Top-up invoice was created but could not be loaded for wallet payment.');
+        }
+
+        $client = $quote['client'] ?? null;
+        if (!$client instanceof \Model_Client) {
+            throw new \FOSSBilling\InformationException('Client not found for wallet payment.');
+        }
+
+        $this->payInvoiceFromClientBalance($invoice, $client);
+        $this->applyPendingTopupsForInvoice((int) $invoice->id);
+
+        $invoiceReload = $this->di['db']->findOne('Invoice', 'id = :id', [':id' => (int) $invoice->id]);
+        $paidInvoice = null;
+        try {
+            $paidInvoice = $this->coerceInvoiceModel($invoiceReload);
+        } catch (\Throwable $e) {
+            $paidInvoice = null;
+        }
+        if (!$paidInvoice instanceof \Model_Invoice || (string) $paidInvoice->status !== \Model_Invoice::STATUS_PAID) {
+            throw new \FOSSBilling\InformationException('Wallet payment did not complete successfully. Please create an invoice and pay it manually.');
+        }
+
+        unset($result['_invoice']);
+        $result['payment_mode'] = 'wallet';
+        $result['paid'] = true;
+        $result['wallet_balance'] = $this->readClientWalletBalance($client);
+        $result['invoice_status'] = (string) $paidInvoice->status;
+
+        return $result;
+    }
+
+    private function buildTopupQuote(\Model_ClientOrder $order, int $hours): array
+    {
         $this->ensureSchema();
         $service = $this->getServiceByOrder($order);
         $summary = $this->getServiceBillingSummary($service, $order);
@@ -1924,43 +2012,39 @@ class Service
         if ($serverTypeLabel === '') {
             $serverTypeLabel = 'Server';
         }
-        $breakdownItems = [];
-        if (is_array($pricing)) {
-            $serverRate = max(0, (float) ($pricing['server_hourly_base'] ?? 0));
-            $ipv4Rate = max(0, (float) ($pricing['ipv4_hourly_base'] ?? 0));
-            $ipv6Rate = max(0, (float) ($pricing['ipv6_hourly_base'] ?? 0));
-            $backupRate = max(0, (float) ($pricing['backup_hourly_base'] ?? 0));
 
-            $breakdownItems[] = [
+        $invoiceItems = [];
+        if (is_array($pricing)) {
+            $invoiceItems[] = [
                 'title' => 'Hetzner ' . $serverTypeLabel . ' (' . $hours . 'h)',
-                'price' => $serverRate,
+                'price' => max(0, (float) ($pricing['server_hourly_base'] ?? 0)),
                 'quantity' => $hours,
                 'unit' => 'hour',
                 'taxed' => false,
                 'type' => \Model_InvoiceItem::TYPE_CUSTOM,
                 'task' => \Model_InvoiceItem::TASK_VOID,
             ];
-            $breakdownItems[] = [
+            $invoiceItems[] = [
                 'title' => 'IPv4 address (' . $hours . 'h)',
-                'price' => $ipv4Rate,
+                'price' => max(0, (float) ($pricing['ipv4_hourly_base'] ?? 0)),
                 'quantity' => $hours,
                 'unit' => 'hour',
                 'taxed' => false,
                 'type' => \Model_InvoiceItem::TYPE_CUSTOM,
                 'task' => \Model_InvoiceItem::TASK_VOID,
             ];
-            $breakdownItems[] = [
+            $invoiceItems[] = [
                 'title' => 'IPv6 address (' . $hours . 'h)',
-                'price' => $ipv6Rate,
+                'price' => max(0, (float) ($pricing['ipv6_hourly_base'] ?? 0)),
                 'quantity' => $hours,
                 'unit' => 'hour',
                 'taxed' => false,
                 'type' => \Model_InvoiceItem::TYPE_CUSTOM,
                 'task' => \Model_InvoiceItem::TASK_VOID,
             ];
-            $breakdownItems[] = [
+            $invoiceItems[] = [
                 'title' => 'Backups (' . $hours . 'h)',
-                'price' => $backupRate,
+                'price' => max(0, (float) ($pricing['backup_hourly_base'] ?? 0)),
                 'quantity' => $hours,
                 'unit' => 'hour',
                 'taxed' => false,
@@ -1968,8 +2052,9 @@ class Service
                 'task' => \Model_InvoiceItem::TASK_VOID,
             ];
         }
-        if (empty($breakdownItems)) {
-            $breakdownItems[] = [
+
+        if (empty($invoiceItems)) {
+            $invoiceItems[] = [
                 'title' => 'Hetzner hourly top-up (' . $hours . 'h) for order #' . $order->id,
                 'price' => $hourlyRate,
                 'quantity' => $hours,
@@ -1980,18 +2065,15 @@ class Service
             ];
         }
 
+        $subtotal = $this->sumInvoiceItemAmounts($invoiceItems);
         $policy = $this->resolveBillingPolicyFromOrderConfig($orderConfig);
-        $lateFeePercent = (float) ($policy['late_topup_fee_percent'] ?? 0);
-        if ($lateFeePercent > 0 && $this->isPrepaidTopupLate($order)) {
-            $topupSubtotal = 0.0;
-            foreach ($breakdownItems as $item) {
-                $price = isset($item['price']) && is_numeric($item['price']) ? (float) $item['price'] : 0.0;
-                $qty = isset($item['quantity']) && is_numeric($item['quantity']) ? (float) $item['quantity'] : 0.0;
-                $topupSubtotal += max(0.0, $price) * max(0.0, $qty);
-            }
-            $lateFeeAmount = max(0.0, $topupSubtotal * ($lateFeePercent / 100.0));
+        $lateFeePercent = max(0.0, (float) ($policy['late_topup_fee_percent'] ?? 0));
+        $isLate = $this->isPrepaidTopupLate($order);
+        $lateFeeAmount = 0.0;
+        if ($lateFeePercent > 0 && $isLate && $subtotal > 0) {
+            $lateFeeAmount = max(0.0, $subtotal * ($lateFeePercent / 100.0));
             if ($lateFeeAmount > 0) {
-                $breakdownItems[] = [
+                $invoiceItems[] = [
                     'title' => 'Late reactivation fee (' . rtrim(rtrim(number_format($lateFeePercent, 2, '.', ''), '0'), '.') . '%)',
                     'price' => $lateFeeAmount,
                     'quantity' => 1,
@@ -2003,10 +2085,61 @@ class Service
             }
         }
 
+        $total = $this->sumInvoiceItemAmounts($invoiceItems);
+        $currency = (string) ($summary['currency'] ?? $order->currency ?? '');
+        $walletBalance = $this->readClientWalletBalance($client);
+        $lineItemsPublic = [];
+        foreach ($invoiceItems as $item) {
+            $price = isset($item['price']) && is_numeric($item['price']) ? (float) $item['price'] : 0.0;
+            $qty = isset($item['quantity']) && is_numeric($item['quantity']) ? (float) $item['quantity'] : 0.0;
+            $lineItemsPublic[] = [
+                'title' => (string) ($item['title'] ?? 'Item'),
+                'unit_price' => $price,
+                'quantity' => $qty,
+                'unit' => (string) ($item['unit'] ?? ''),
+                'total' => max(0.0, $price) * max(0.0, $qty),
+            ];
+        }
+
+        return [
+            'service' => $service,
+            'summary' => $summary,
+            'client' => $client,
+            'hours' => $hours,
+            'hourly_rate' => $hourlyRate,
+            'currency' => $currency,
+            'invoice_items' => $invoiceItems,
+            'line_items_public' => $lineItemsPublic,
+            'subtotal' => $subtotal,
+            'late_fee_percent' => $lateFeePercent,
+            'late_fee_amount' => $lateFeeAmount,
+            'total' => $total,
+            'is_late' => $isLate,
+            'wallet_balance' => $walletBalance,
+            'can_pay_from_balance' => $walletBalance + 0.0000001 >= $total,
+        ];
+    }
+
+    private function createTopupInvoiceFromQuote(\Model_ClientOrder $order, array $quote): array
+    {
+        $client = $quote['client'] ?? null;
+        if (!$client instanceof \Model_Client) {
+            throw new \FOSSBilling\InformationException('Client not found for this service.');
+        }
+        $service = $quote['service'] ?? null;
+        if (!is_object($service)) {
+            throw new \FOSSBilling\InformationException('Service not found for this order.');
+        }
+        $summary = is_array($quote['summary'] ?? null) ? $quote['summary'] : [];
+        $invoiceItems = is_array($quote['invoice_items'] ?? null) ? $quote['invoice_items'] : [];
+        if (empty($invoiceItems)) {
+            throw new \FOSSBilling\InformationException('Top-up quote has no invoice items.');
+        }
+
         $invoiceService = $this->di['mod_service']('Invoice');
         $invoice = $invoiceService->prepareInvoice($client, [
             'approve' => true,
-            'items' => $breakdownItems,
+            'items' => $invoiceItems,
         ]);
 
         $topup = $this->di['db']->dispense('service_hetzner_topup');
@@ -2014,9 +2147,9 @@ class Service
         $topup->order_id = (int) $order->id;
         $topup->client_id = (int) $order->client_id;
         $topup->invoice_id = (int) $invoice->id;
-        $topup->hours = $hours;
-        $topup->hourly_rate = $hourlyRate;
-        $topup->currency = (string) ($summary['currency'] ?? $order->currency ?? '');
+        $topup->hours = (int) ($quote['hours'] ?? 0);
+        $topup->hourly_rate = (float) ($quote['hourly_rate'] ?? 0);
+        $topup->currency = (string) ($quote['currency'] ?? $summary['currency'] ?? $order->currency ?? '');
         $topup->status = 'pending_payment';
         $topup->created_at = date('Y-m-d H:i:s');
         $topup->updated_at = date('Y-m-d H:i:s');
@@ -2034,10 +2167,97 @@ class Service
             'invoice_id' => (int) $invoice->id,
             'invoice_hash' => (string) ($invoice->hash ?? ''),
             'invoice_url' => $url,
-            'hours' => $hours,
-            'hourly_rate' => $hourlyRate,
-            'currency' => (string) ($summary['currency'] ?? $order->currency ?? ''),
+            'hours' => (int) ($quote['hours'] ?? 0),
+            'hourly_rate' => (float) ($quote['hourly_rate'] ?? 0.0),
+            'currency' => (string) ($quote['currency'] ?? ''),
+            '_invoice' => $invoice,
         ];
+    }
+
+    private function sumInvoiceItemAmounts(array $items): float
+    {
+        $total = 0.0;
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $price = isset($item['price']) && is_numeric($item['price']) ? (float) $item['price'] : 0.0;
+            $qty = isset($item['quantity']) && is_numeric($item['quantity']) ? (float) $item['quantity'] : 0.0;
+            $total += max(0.0, $price) * max(0.0, $qty);
+        }
+
+        return max(0.0, $total);
+    }
+
+    private function readClientWalletBalance($client): float
+    {
+        if (!is_object($client)) {
+            return 0.0;
+        }
+
+        foreach (['balance', 'credit', 'credit_balance'] as $field) {
+            try {
+                if (isset($client->{$field}) || property_exists($client, $field)) {
+                    $value = $client->{$field};
+                    if (is_numeric($value)) {
+                        return (float) $value;
+                    }
+                }
+            } catch (\Throwable $e) {
+                continue;
+            }
+        }
+
+        return 0.0;
+    }
+
+    private function payInvoiceFromClientBalance(\Model_Invoice $invoice, \Model_Client $client): void
+    {
+        $invoiceService = $this->di['mod_service']('Invoice');
+        $candidateCalls = [
+            ['payInvoiceWithCredits', [[$invoice], [$invoice, $client], [(int) $invoice->id], [(int) $invoice->id, (int) $client->id]]],
+            ['payWithCredits', [[$invoice], [$invoice, $client], [(int) $invoice->id], [(int) $invoice->id, (int) $client->id]]],
+            ['payInvoiceWithClientBalance', [[$invoice], [$invoice, $client], [(int) $invoice->id], [(int) $invoice->id, (int) $client->id]]],
+            ['payWithClientBalance', [[$invoice], [$invoice, $client], [(int) $invoice->id], [(int) $invoice->id, (int) $client->id]]],
+            ['payInvoice', [[$invoice, 'balance'], [(int) $invoice->id, 'balance']]],
+        ];
+
+        $attemptErrors = [];
+        foreach ($candidateCalls as $candidate) {
+            $method = (string) ($candidate[0] ?? '');
+            if ($method === '' || !is_object($invoiceService) || !method_exists($invoiceService, $method)) {
+                continue;
+            }
+
+            foreach ((array) ($candidate[1] ?? []) as $args) {
+                try {
+                    $invoiceService->{$method}(...$args);
+                } catch (\ArgumentCountError $e) {
+                    $attemptErrors[] = $method . ': ' . $e->getMessage();
+                    continue;
+                } catch (\Throwable $e) {
+                    $attemptErrors[] = $method . ': ' . $e->getMessage();
+                    continue;
+                }
+
+                $reloaded = $this->di['db']->findOne('Invoice', 'id = :id', [':id' => (int) $invoice->id]);
+                $invoiceModel = null;
+                try {
+                    $invoiceModel = $this->coerceInvoiceModel($reloaded);
+                } catch (\Throwable $e) {
+                    $invoiceModel = null;
+                }
+                if ($invoiceModel instanceof \Model_Invoice && (string) $invoiceModel->status === \Model_Invoice::STATUS_PAID) {
+                    return;
+                }
+            }
+        }
+
+        $suffix = '';
+        if (!empty($attemptErrors)) {
+            $suffix = ' Tried: ' . implode(' | ', array_slice($attemptErrors, 0, 4));
+        }
+        throw new \FOSSBilling\InformationException('Wallet payment integration is not available in this FOSSBilling build.' . $suffix);
     }
 
     private function applyPendingTopupsForInvoice(int $invoiceId = 0): int
