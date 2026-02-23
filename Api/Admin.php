@@ -26,6 +26,9 @@ class Admin extends \Api_Abstract
         return [
             'default_project_ref' => $config['default_project_ref'],
             'delete_on_cancel' => $config['delete_on_cancel'],
+            'expired_prepaid_delete_mode' => $config['expired_prepaid_delete_mode'] ?? 'poweroff_only',
+            'expired_prepaid_delete_grace_hours' => $config['expired_prepaid_delete_grace_hours'] ?? '0',
+            'late_topup_fee_percent' => $config['late_topup_fee_percent'] ?? '0',
             'api_url' => $config['api_url'],
             'api_token_set' => trim((string) $config['api_token']) !== '',
             'verify_ssl' => $config['verify_ssl'],

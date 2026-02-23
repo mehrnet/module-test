@@ -41,6 +41,9 @@ class Service
             $this->persistModuleConfig([
                 'default_project_ref' => self::DEFAULT_PROJECT_REF,
                 'delete_on_cancel' => '0',
+                'expired_prepaid_delete_mode' => 'poweroff_only',
+                'expired_prepaid_delete_grace_hours' => '0',
+                'late_topup_fee_percent' => '0',
                 'projects' => [
                     $this->ensureProjectDefaults([
                         'ref' => self::DEFAULT_PROJECT_REF,
@@ -304,6 +307,12 @@ class Service
         }
 
         $service->status = 'suspended';
+        $summary = $this->getServiceBillingSummary($service, $order);
+        if (($summary['mode'] ?? self::BILLING_MODE_STANDARD) === self::BILLING_MODE_PREPAID_HOURS) {
+            $state = $this->readBillingStateFromService($service);
+            $this->armPrepaidRetentionTimerIfExpired($service, $order, $summary, $state);
+            $this->writeBillingStateToService($service, $state);
+        }
         $service->updated_at = date('Y-m-d H:i:s');
         $this->di['db']->store($service);
 
@@ -328,6 +337,9 @@ class Service
         $service->status = 'active';
         $service->updated_at = date('Y-m-d H:i:s');
         $this->touchBillingAccountedAt($service);
+        $state = $this->readBillingStateFromService($service);
+        $this->clearPrepaidRetentionTimer($state);
+        $this->writeBillingStateToService($service, $state);
         $this->di['db']->store($service);
 
         return true;
@@ -374,6 +386,9 @@ class Service
         }
 
         $service->status = 'cancelled';
+        $state = $this->readBillingStateFromService($service);
+        $this->clearPrepaidRetentionTimer($state);
+        $this->writeBillingStateToService($service, $state);
         $service->updated_at = date('Y-m-d H:i:s');
         $this->di['db']->store($service);
 
@@ -549,6 +564,9 @@ class Service
             'max_servers' => $defaultProject['max_servers'],
             'default_project_ref' => $defaultProjectRef,
             'delete_on_cancel' => ((string) ($config['delete_on_cancel'] ?? '0') === '1') ? '1' : '0',
+            'expired_prepaid_delete_mode' => $this->normalizeExpiredPrepaidDeleteMode((string) ($config['expired_prepaid_delete_mode'] ?? 'poweroff_only')),
+            'expired_prepaid_delete_grace_hours' => (string) $this->normalizeIntegerRangeAllowZero($config['expired_prepaid_delete_grace_hours'] ?? 0, 0, 8760, 0),
+            'late_topup_fee_percent' => (string) $this->normalizePercentValue($config['late_topup_fee_percent'] ?? 0, 0.0, 1000.0),
             'projects' => array_values($projects),
         ];
     }
@@ -568,6 +586,15 @@ class Service
 
         if (isset($data['delete_on_cancel'])) {
             $config['delete_on_cancel'] = $this->parseBool($data['delete_on_cancel']) ? '1' : '0';
+        }
+        if (isset($data['expired_prepaid_delete_mode'])) {
+            $config['expired_prepaid_delete_mode'] = $this->normalizeExpiredPrepaidDeleteMode((string) $data['expired_prepaid_delete_mode']);
+        }
+        if (isset($data['expired_prepaid_delete_grace_hours'])) {
+            $config['expired_prepaid_delete_grace_hours'] = (string) $this->normalizeIntegerRangeAllowZero($data['expired_prepaid_delete_grace_hours'], 0, 8760, 0);
+        }
+        if (isset($data['late_topup_fee_percent'])) {
+            $config['late_topup_fee_percent'] = (string) $this->normalizePercentValue($data['late_topup_fee_percent'], 0.0, 1000.0);
         }
 
         // Backward-compatible one-key settings update edits the current default project.
@@ -619,6 +646,9 @@ class Service
         $payload = [
             'default_project_ref' => $defaultRef,
             'delete_on_cancel' => $config['delete_on_cancel'] ?? '0',
+            'expired_prepaid_delete_mode' => $config['expired_prepaid_delete_mode'] ?? 'poweroff_only',
+            'expired_prepaid_delete_grace_hours' => (string) ($config['expired_prepaid_delete_grace_hours'] ?? '0'),
+            'late_topup_fee_percent' => (string) ($config['late_topup_fee_percent'] ?? '0'),
             'projects' => array_values($projectsByRef),
         ];
 
@@ -732,6 +762,9 @@ class Service
         $this->persistModuleConfig([
             'default_project_ref' => $defaultRef,
             'delete_on_cancel' => $config['delete_on_cancel'] ?? '0',
+            'expired_prepaid_delete_mode' => $config['expired_prepaid_delete_mode'] ?? 'poweroff_only',
+            'expired_prepaid_delete_grace_hours' => (string) ($config['expired_prepaid_delete_grace_hours'] ?? '0'),
+            'late_topup_fee_percent' => (string) ($config['late_topup_fee_percent'] ?? '0'),
             'projects' => array_values($projectsByRef),
         ]);
 
@@ -769,6 +802,9 @@ class Service
         $this->persistModuleConfig([
             'default_project_ref' => $defaultRef,
             'delete_on_cancel' => $config['delete_on_cancel'] ?? '0',
+            'expired_prepaid_delete_mode' => $config['expired_prepaid_delete_mode'] ?? 'poweroff_only',
+            'expired_prepaid_delete_grace_hours' => (string) ($config['expired_prepaid_delete_grace_hours'] ?? '0'),
+            'late_topup_fee_percent' => (string) ($config['late_topup_fee_percent'] ?? '0'),
             'projects' => array_values($projectsByRef),
         ]);
 
@@ -1769,6 +1805,7 @@ class Service
         $processed = 0;
         $chargedHours = 0;
         $suspended = 0;
+        $deletedByRetention = 0;
         $errors = [];
 
         if ($applyTopups) {
@@ -1777,6 +1814,16 @@ class Service
             } catch (\Throwable $e) {
                 $errors[] = 'Top-up apply failed: ' . $e->getMessage();
             }
+        }
+
+        try {
+            $retentionTick = $this->processPrepaidRetentionDeletionTick();
+            $deletedByRetention = max(0, (int) ($retentionTick['deleted'] ?? 0));
+            foreach ((array) ($retentionTick['errors'] ?? []) as $err) {
+                $errors[] = (string) $err;
+            }
+        } catch (\Throwable $e) {
+            $errors[] = 'Retention delete tick failed: ' . $e->getMessage();
         }
 
         $services = $this->di['db']->find(
@@ -1823,6 +1870,7 @@ class Service
             'processed' => $processed,
             'charged_hours' => $chargedHours,
             'suspended' => $suspended,
+            'deleted_by_retention' => $deletedByRetention,
             'errors' => $errors,
             'at' => date('c'),
         ];
@@ -1920,6 +1968,29 @@ class Service
                 'type' => \Model_InvoiceItem::TYPE_CUSTOM,
                 'task' => \Model_InvoiceItem::TASK_VOID,
             ];
+        }
+
+        $policy = $this->resolveBillingPolicyFromOrderConfig($orderConfig);
+        $lateFeePercent = (float) ($policy['late_topup_fee_percent'] ?? 0);
+        if ($lateFeePercent > 0 && $this->isPrepaidTopupLate($order)) {
+            $topupSubtotal = 0.0;
+            foreach ($breakdownItems as $item) {
+                $price = isset($item['price']) && is_numeric($item['price']) ? (float) $item['price'] : 0.0;
+                $qty = isset($item['quantity']) && is_numeric($item['quantity']) ? (float) $item['quantity'] : 0.0;
+                $topupSubtotal += max(0.0, $price) * max(0.0, $qty);
+            }
+            $lateFeeAmount = max(0.0, $topupSubtotal * ($lateFeePercent / 100.0));
+            if ($lateFeeAmount > 0) {
+                $breakdownItems[] = [
+                    'title' => 'Late reactivation fee (' . rtrim(rtrim(number_format($lateFeePercent, 2, '.', ''), '0'), '.') . '%)',
+                    'price' => $lateFeeAmount,
+                    'quantity' => 1,
+                    'unit' => 'fee',
+                    'taxed' => false,
+                    'type' => \Model_InvoiceItem::TYPE_CUSTOM,
+                    'task' => \Model_InvoiceItem::TASK_VOID,
+                ];
+            }
         }
 
         $invoiceService = $this->di['mod_service']('Invoice');
@@ -2029,6 +2100,7 @@ class Service
             $state['billing_clock_mode'] = 'wall_clock';
             $this->extendPrepaidOrderExpiry($order, $hours, $service, $state);
             $this->syncPrepaidBillingStateFromOrderExpiry($order, $state);
+            $this->clearPrepaidRetentionTimer($state);
             $this->touchBillingState($state);
             $this->writeBillingStateToService($service, $state);
 
@@ -2296,9 +2368,57 @@ class Service
         return $hours;
     }
 
+    private function normalizeIntegerRangeAllowZero($value, int $min, int $max, int $default): int
+    {
+        $min = max(0, $min);
+        $max = max($min, $max);
+        $default = max($min, min($max, $default));
+
+        if (!is_numeric($value)) {
+            return $default;
+        }
+
+        $n = (int) ceil((float) $value);
+        if ($n < $min) {
+            return $min;
+        }
+        if ($n > $max) {
+            return $max;
+        }
+
+        return $n;
+    }
+
+    private function normalizePercentValue($value, float $min = 0.0, float $max = 100.0): float
+    {
+        if (!is_numeric($value)) {
+            return max($min, min($max, 0.0));
+        }
+        $n = (float) $value;
+        if ($n < $min) {
+            return $min;
+        }
+        if ($n > $max) {
+            return $max;
+        }
+
+        return $n;
+    }
+
+    private function normalizeExpiredPrepaidDeleteMode(string $mode): string
+    {
+        $mode = strtolower(trim($mode));
+        if (in_array($mode, ['delete_immediately', 'delete_after_grace', 'poweroff_only'], true)) {
+            return $mode;
+        }
+
+        return 'poweroff_only';
+    }
+
     private function resolveBillingPolicyFromOrderConfig(array $orderConfig): array
     {
         $productConfig = is_array($orderConfig['__product_config'] ?? null) ? $orderConfig['__product_config'] : [];
+        $moduleConfig = $this->getModuleConfig();
         $merged = array_merge($productConfig, $orderConfig);
 
         $minHours = $this->normalizeHours($merged['prepaid_hours_min'] ?? 1, 1, 8760, 1);
@@ -2311,6 +2431,27 @@ class Service
             ? max(0, (float) $merged['hourly_rate'])
             : 0.0;
 
+        $expiredDeleteMode = $this->normalizeExpiredPrepaidDeleteMode((string) (
+            $merged['expired_prepaid_delete_mode']
+            ?? $moduleConfig['expired_prepaid_delete_mode']
+            ?? 'poweroff_only'
+        ));
+        $expiredDeleteGraceHours = $this->normalizeIntegerRangeAllowZero(
+            $merged['expired_prepaid_delete_grace_hours']
+            ?? $moduleConfig['expired_prepaid_delete_grace_hours']
+            ?? 0,
+            0,
+            8760,
+            0
+        );
+        $lateTopupFeePercent = $this->normalizePercentValue(
+            $merged['late_topup_fee_percent']
+            ?? $moduleConfig['late_topup_fee_percent']
+            ?? 0,
+            0.0,
+            1000.0
+        );
+
         return [
             'mode' => $this->normalizeBillingMode((string) ($merged['billing_mode'] ?? self::BILLING_MODE_STANDARD)),
             'default_hours' => $defaultHours,
@@ -2321,6 +2462,9 @@ class Service
             'hourly_rate' => $hourlyRate,
             'auto_suspend_on_exhaustion' => $this->parseBool($merged['auto_suspend_on_exhaustion'] ?? '1'),
             'auto_poweron_on_topup' => $this->parseBool($merged['auto_poweron_on_topup'] ?? '1'),
+            'expired_prepaid_delete_mode' => $expiredDeleteMode,
+            'expired_prepaid_delete_grace_hours' => $expiredDeleteGraceHours,
+            'late_topup_fee_percent' => $lateTopupFeePercent,
         ];
     }
 
@@ -2385,6 +2529,16 @@ class Service
         return $ts !== false && $ts > 0 ? $ts : 0;
     }
 
+    private function isPrepaidTopupLate(\Model_ClientOrder $order): bool
+    {
+        $expiryTs = $this->getPrepaidOrderExpiryTimestamp($order);
+        if ($expiryTs <= 0) {
+            return false;
+        }
+
+        return $expiryTs <= time();
+    }
+
     private function extendPrepaidOrderExpiry(\Model_ClientOrder $order, int $hours, $service = null, array &$state = null): int
     {
         $hours = max(0, (int) $hours);
@@ -2437,6 +2591,104 @@ class Service
                 $state['billing_started_at'] = date('c');
             }
         }
+    }
+
+    private function clearPrepaidRetentionTimer(array &$state): void
+    {
+        $state['retention_delete_after_at'] = '';
+        $state['retention_suspended_at'] = '';
+        $state['retention_reason'] = '';
+    }
+
+    private function armPrepaidRetentionTimerIfExpired($service, \Model_ClientOrder $order, array $summary, array &$state): void
+    {
+        if (($summary['mode'] ?? self::BILLING_MODE_STANDARD) !== self::BILLING_MODE_PREPAID_HOURS) {
+            return;
+        }
+
+        if (!$this->isPrepaidTopupLate($order)) {
+            $this->clearPrepaidRetentionTimer($state);
+            return;
+        }
+
+        $mode = $this->normalizeExpiredPrepaidDeleteMode((string) ($summary['expired_prepaid_delete_mode'] ?? 'poweroff_only'));
+        if ($mode === 'poweroff_only') {
+            $state['retention_reason'] = 'expired_unpaid';
+            if (trim((string) ($state['retention_suspended_at'] ?? '')) === '') {
+                $state['retention_suspended_at'] = date('c');
+            }
+            $state['retention_delete_after_at'] = '';
+            return;
+        }
+
+        $suspendedAtTs = strtotime((string) ($state['retention_suspended_at'] ?? ''));
+        if ($suspendedAtTs === false || $suspendedAtTs <= 0) {
+            $suspendedAtTs = time();
+            $state['retention_suspended_at'] = date('c', $suspendedAtTs);
+        }
+
+        $graceHours = max(0, (int) ($summary['expired_prepaid_delete_grace_hours'] ?? 0));
+        $deleteAfterTs = $mode === 'delete_immediately'
+            ? time()
+            : ($suspendedAtTs + ($graceHours * 3600));
+
+        $state['retention_reason'] = 'expired_unpaid';
+        $state['retention_delete_after_at'] = date('c', $deleteAfterTs);
+    }
+
+    private function processPrepaidRetentionDeletionTick(): array
+    {
+        $processed = 0;
+        $deleted = 0;
+        $errors = [];
+        $rows = $this->di['db']->find(
+            'service_hetzner',
+            'status = :status AND provision_status = :ps AND hcloud_server_id IS NOT NULL',
+            [
+                ':status' => 'suspended',
+                ':ps' => 'provisioned',
+            ]
+        );
+
+        foreach ($rows as $service) {
+            if (!is_object($service)) {
+                continue;
+            }
+
+            try {
+                $order = $this->coerceClientOrderModel(['id' => (int) ($service->order_id ?? 0)]);
+                $summary = $this->getServiceBillingSummary($service, $order);
+                if (($summary['mode'] ?? self::BILLING_MODE_STANDARD) !== self::BILLING_MODE_PREPAID_HOURS) {
+                    continue;
+                }
+
+                $processed++;
+                $state = $this->readBillingStateFromService($service);
+                $this->armPrepaidRetentionTimerIfExpired($service, $order, $summary, $state);
+
+                $deleteAfterTs = strtotime((string) ($state['retention_delete_after_at'] ?? ''));
+                if ($deleteAfterTs !== false && $deleteAfterTs > 0 && $deleteAfterTs <= time()) {
+                    $this->deleteRemoteServer($order, $service);
+                    $service->hcloud_server_id = null;
+                    $service->provision_status = 'deleted';
+                    $state['retention_deleted_at'] = date('c');
+                    $state['retention_delete_after_at'] = '';
+                    $deleted++;
+                }
+
+                $this->writeBillingStateToService($service, $state);
+                $service->updated_at = date('Y-m-d H:i:s');
+                $this->di['db']->store($service);
+            } catch (\Throwable $e) {
+                $errors[] = 'Retention service #' . ((int) ($service->id ?? 0)) . ': ' . $e->getMessage();
+            }
+        }
+
+        return [
+            'processed' => $processed,
+            'deleted' => $deleted,
+            'errors' => $errors,
+        ];
     }
 
     private function writeBillingStateToService($service, array $state): void
@@ -2570,6 +2822,9 @@ class Service
             'topup_max_hours' => max(1, (int) ($state['topup_max_hours'] ?? $policy['topup_max_hours'] ?? 8760)),
             'auto_suspend_on_exhaustion' => $this->parseBool($state['auto_suspend_on_exhaustion'] ?? ($policy['auto_suspend_on_exhaustion'] ? '1' : '0')),
             'auto_poweron_on_topup' => $this->parseBool($state['auto_poweron_on_topup'] ?? ($policy['auto_poweron_on_topup'] ? '1' : '0')),
+            'expired_prepaid_delete_mode' => (string) ($policy['expired_prepaid_delete_mode'] ?? 'poweroff_only'),
+            'expired_prepaid_delete_grace_hours' => max(0, (int) ($policy['expired_prepaid_delete_grace_hours'] ?? 0)),
+            'late_topup_fee_percent' => max(0, (float) ($policy['late_topup_fee_percent'] ?? 0)),
             'hold_reason' => (string) ($state['hold_reason'] ?? ''),
             'hold_since' => (string) ($state['hold_since'] ?? ''),
             'updated_at' => (string) ($state['updated_at'] ?? ''),
@@ -3020,6 +3275,9 @@ class Service
         $this->persistModuleConfig([
             'default_project_ref' => $config['default_project_ref'] ?? self::DEFAULT_PROJECT_REF,
             'delete_on_cancel' => $config['delete_on_cancel'] ?? '0',
+            'expired_prepaid_delete_mode' => $config['expired_prepaid_delete_mode'] ?? 'poweroff_only',
+            'expired_prepaid_delete_grace_hours' => (string) ($config['expired_prepaid_delete_grace_hours'] ?? '0'),
+            'late_topup_fee_percent' => (string) ($config['late_topup_fee_percent'] ?? '0'),
             'projects' => array_values($projectsByRef),
         ]);
     }

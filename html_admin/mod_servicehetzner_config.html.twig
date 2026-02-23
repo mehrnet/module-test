@@ -30,7 +30,7 @@
           <option value="standard"{% if billing_mode == 'standard' %} selected{% endif %}>{{ 'Standard FossBilling pricing'|trans }}</option>
           <option value="prepaid_hours"{% if billing_mode == 'prepaid_hours' %} selected{% endif %}>{{ 'Prepaid hourly balance'|trans }}</option>
         </select>
-        <small class="form-hint">{{ 'Prepaid hourly mode uses quantity=hours, consumes balance in cron, and suspends when exhausted. Checkout unit pricing is calculated from Hetzner catalog rates (with optional markup).'|trans }}</small>
+        <small class="form-hint">{{ 'Prepaid mode uses quantity=hours as prepaid rental time. The order expiration is extended by paid hours, and FossBilling cron suspension is used when time expires. Checkout unit pricing is calculated from Hetzner catalog rates (with optional markup).'|trans }}</small>
       </div>
     </div>
 
@@ -74,6 +74,28 @@
           <input class="form-check-input" type="checkbox" id="hetzner_auto_poweron_on_topup" {% if cfg.auto_poweron_on_topup|default('1') in ['1', 1, true] %}checked{% endif %}>
           <label class="form-check-label" for="hetzner_auto_poweron_on_topup">{{ 'Auto power-on suspended server when top-up is applied'|trans }}</label>
         </div>
+        <hr class="my-3">
+        <div class="row g-2">
+          <div class="col-md-5">
+            <label class="form-label">{{ 'Expiry suspension action'|trans }}</label>
+            {% set expiry_delete_mode = cfg.expired_prepaid_delete_mode|default('') %}
+            <select class="form-select" id="hetzner_expired_prepaid_delete_mode">
+              <option value=""{% if expiry_delete_mode == '' %} selected{% endif %}>{{ 'Use module default'|trans }}</option>
+              <option value="poweroff_only"{% if expiry_delete_mode == 'poweroff_only' %} selected{% endif %}>{{ 'Power off only'|trans }}</option>
+              <option value="delete_immediately"{% if expiry_delete_mode == 'delete_immediately' %} selected{% endif %}>{{ 'Delete immediately'|trans }}</option>
+              <option value="delete_after_grace"{% if expiry_delete_mode == 'delete_after_grace' %} selected{% endif %}>{{ 'Delete after grace period'|trans }}</option>
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">{{ 'Grace hours'|trans }}</label>
+            <input class="form-control" type="number" min="0" max="8760" step="1" id="hetzner_expired_prepaid_delete_grace_hours" value="{{ cfg.expired_prepaid_delete_grace_hours|default('') }}" placeholder="{{ 'default'|trans }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">{{ 'Late top-up fee (%)'|trans }}</label>
+            <input class="form-control" type="number" min="0" max="1000" step="0.01" id="hetzner_late_topup_fee_percent" value="{{ cfg.late_topup_fee_percent|default('') }}" placeholder="{{ 'default'|trans }}">
+          </div>
+        </div>
+        <small class="form-hint">{{ 'Applied only for prepaid products. Late top-up fee is added when creating a top-up invoice after the order expiration time has passed.'|trans }}</small>
       </div>
     </div>
 
@@ -546,6 +568,9 @@
         hourly_rate: document.getElementById('hetzner_hourly_rate').value || '0',
         auto_suspend_on_exhaustion: document.getElementById('hetzner_auto_suspend_on_exhaustion').checked ? '1' : '0',
         auto_poweron_on_topup: document.getElementById('hetzner_auto_poweron_on_topup').checked ? '1' : '0',
+        expired_prepaid_delete_mode: document.getElementById('hetzner_expired_prepaid_delete_mode').value || '',
+        expired_prepaid_delete_grace_hours: document.getElementById('hetzner_expired_prepaid_delete_grace_hours').value || '',
+        late_topup_fee_percent: document.getElementById('hetzner_late_topup_fee_percent').value || '',
         allow_server_type_choice: document.getElementById('hetzner_allow_server_type_choice').checked ? '1' : '0',
         server_type: document.getElementById('hetzner_server_type_select').value || '',
         allow_location_choice: document.getElementById('hetzner_allow_location_choice').checked ? '1' : '0',

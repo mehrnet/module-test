@@ -23,6 +23,22 @@
           <label for="delete_on_cancel" class="form-check-label">{{ 'Enabled'|trans }}</label>
         </div>
       </div>
+      <div class="col-md-6">
+        <label class="form-label" for="expired_prepaid_delete_mode">{{ 'Prepaid expiry action (default)'|trans }}</label>
+        <select id="expired_prepaid_delete_mode" class="form-select">
+          <option value="poweroff_only">{{ 'Power off only (keep server)'|trans }}</option>
+          <option value="delete_immediately">{{ 'Delete immediately after suspension'|trans }}</option>
+          <option value="delete_after_grace">{{ 'Delete after grace period'|trans }}</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="expired_prepaid_delete_grace_hours">{{ 'Grace hours'|trans }}</label>
+        <input id="expired_prepaid_delete_grace_hours" type="number" min="0" max="8760" step="1" class="form-control" value="{{ config.expired_prepaid_delete_grace_hours|default('0') }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="late_topup_fee_percent">{{ 'Late top-up fee (%)'|trans }}</label>
+        <input id="late_topup_fee_percent" type="number" min="0" max="1000" step="0.01" class="form-control" value="{{ config.late_topup_fee_percent|default('0') }}">
+      </div>
     </div>
 
     <div class="mt-3">
@@ -317,6 +333,9 @@ function applyConfig(config) {
   renderProjectsTable();
 
   document.getElementById('delete_on_cancel').checked = String(config.delete_on_cancel || '0') === '1';
+  document.getElementById('expired_prepaid_delete_mode').value = String(config.expired_prepaid_delete_mode || 'poweroff_only');
+  document.getElementById('expired_prepaid_delete_grace_hours').value = String(config.expired_prepaid_delete_grace_hours || '0');
+  document.getElementById('late_topup_fee_percent').value = String(config.late_topup_fee_percent || '0');
 
   const defaultProject = projectsState.find(function(project) {
     return !!project.is_default;
@@ -340,7 +359,10 @@ function reloadProjects() {
 function saveGlobalSettings() {
   API.admin.post('servicehetzner/config_update', {
     default_project_ref: document.getElementById('default_project_ref').value,
-    delete_on_cancel: document.getElementById('delete_on_cancel').checked ? '1' : '0'
+    delete_on_cancel: document.getElementById('delete_on_cancel').checked ? '1' : '0',
+    expired_prepaid_delete_mode: document.getElementById('expired_prepaid_delete_mode').value || 'poweroff_only',
+    expired_prepaid_delete_grace_hours: document.getElementById('expired_prepaid_delete_grace_hours').value || '0',
+    late_topup_fee_percent: document.getElementById('late_topup_fee_percent').value || '0'
   }, function(result) {
     if (result && result.ok === false) {
       FOSSBilling.message(result.message || 'Failed to save settings', 'error');
