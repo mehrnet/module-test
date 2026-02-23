@@ -83,7 +83,7 @@
 const HETZNER_ORDER_ID = {{ order_id }};
 
 function esc(value) {
-  return String(value || '')
+  return String(value === null || value === undefined ? '' : value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -166,6 +166,7 @@ function renderHetznerBilling(data) {
 function renderHetznerDetails(data) {
   const box = document.getElementById('hetzner-details-box');
   const server = data.server || null;
+  const credentials = data.credentials || {};
   renderHetznerBilling(data || {});
 
   if (!server) {
@@ -175,6 +176,10 @@ function renderHetznerDetails(data) {
 
   const ipv4 = server.public_net && server.public_net.ipv4 ? (server.public_net.ipv4.ip || '') : '';
   const ipv6 = server.public_net && server.public_net.ipv6 ? (server.public_net.ipv6.ip || '') : '';
+  const rootPassword = String(credentials.root_password || '').trim();
+  const rootPasswordRow = rootPassword
+    ? '<tr><th>Initial root password</th><td><code>' + esc(rootPassword) + '</code><div class="small text-muted mt-1">Shown from Hetzner create response. Change it after first login.</div></td></tr>'
+    : '<tr><th>Login</th><td><span class="text-muted">No initial password was returned by Hetzner. Use your SSH key, or reset the root password from Hetzner if password login is required.</span></td></tr>';
 
   box.innerHTML = [
     '<div class="table-responsive">',
@@ -188,6 +193,7 @@ function renderHetznerDetails(data) {
     '<tr><th>Type</th><td>' + esc(server.server_type && server.server_type.name ? server.server_type.name : '') + '</td></tr>',
     '<tr><th>Image</th><td>' + esc(server.image && server.image.name ? server.image.name : '') + '</td></tr>',
     '<tr><th>Datacenter</th><td>' + esc(server.datacenter && server.datacenter.name ? server.datacenter.name : '') + '</td></tr>',
+    rootPasswordRow,
     '</tbody>',
     '</table>',
     '</div>'

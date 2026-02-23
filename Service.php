@@ -262,6 +262,10 @@ class Service
                         ],
                         'server' => $created['server'] ?? [],
                         'action' => $created['action'] ?? [],
+                        'credentials' => [
+                            'root_password' => (string) ($created['root_password'] ?? ''),
+                            'provided_at' => !empty($created['root_password']) ? date('c') : '',
+                        ],
                     ]
                 ));
                 $this->initializePrepaidBillingState($service, $order, $orderConfig);
@@ -1561,6 +1565,12 @@ class Service
             'config' => $this->decodeJson((string) $service->config),
             'billing' => $this->getServiceBillingSummary($service, $order),
         ];
+        $cfg = is_array($base['config'] ?? null) ? $base['config'] : [];
+        $creds = is_array($cfg['credentials'] ?? null) ? $cfg['credentials'] : [];
+        $base['credentials'] = [
+            'root_password' => (string) ($creds['root_password'] ?? ''),
+            'provided_at' => (string) ($creds['provided_at'] ?? ''),
+        ];
 
         if (empty($service->hcloud_server_id)) {
             $base['server'] = null;
@@ -2513,8 +2523,14 @@ class Service
     private function getPrepaidOrderExpiryTimestamp(\Model_ClientOrder $order): int
     {
         $raw = '';
-        if (isset($order->expires_at)) {
-            $raw = trim((string) $order->expires_at);
+        foreach (['expires_at', 'expires_on'] as $field) {
+            if (isset($order->{$field})) {
+                $candidate = trim((string) $order->{$field});
+                if ($candidate !== '') {
+                    $raw = $candidate;
+                    break;
+                }
+            }
         }
 
         if ($raw === '' && isset($order->activated_at)) {
@@ -2550,7 +2566,11 @@ class Service
         $baseTs = max(time(), $currentExpiryTs);
         $newExpiryTs = $baseTs + ($hours * 3600);
 
-        $order->expires_at = date('Y-m-d H:i:s', $newExpiryTs);
+        $expiresMysql = date('Y-m-d H:i:s', $newExpiryTs);
+        $order->expires_at = $expiresMysql;
+        if (isset($order->expires_on)) {
+            $order->expires_on = $expiresMysql;
+        }
         if (isset($order->updated_at)) {
             $order->updated_at = date('Y-m-d H:i:s');
         }
@@ -2570,6 +2590,12 @@ class Service
     {
         $purchased = max(0, (int) ($state['hours_purchased_total'] ?? 0));
         $expiryTs = $this->getPrepaidOrderExpiryTimestamp($order);
+        if ($expiryTs <= 0) {
+            $stateExpiryTs = strtotime((string) ($state['expires_at'] ?? ''));
+            if ($stateExpiryTs !== false && $stateExpiryTs > 0) {
+                $expiryTs = $stateExpiryTs;
+            }
+        }
         if ($expiryTs <= 0) {
             $state['hours_consumed'] = max(0, min($purchased, (int) ($state['hours_consumed'] ?? 0)));
             $state['hours_balance'] = max(0, min($purchased, (int) ($state['hours_balance'] ?? max($purchased - ((int) ($state['hours_consumed'] ?? 0)), 0))));
