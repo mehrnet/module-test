@@ -2671,8 +2671,11 @@ class Service
                     $this->deleteRemoteServer($order, $service);
                     $service->hcloud_server_id = null;
                     $service->provision_status = 'deleted';
+                    $service->status = 'cancelled';
                     $state['retention_deleted_at'] = date('c');
                     $state['retention_delete_after_at'] = '';
+                    $state['retention_reason'] = 'expired_unpaid_deleted';
+                    $this->markClientOrderCancelledAfterRetentionDeletion($order);
                     $deleted++;
                 }
 
@@ -2689,6 +2692,44 @@ class Service
             'deleted' => $deleted,
             'errors' => $errors,
         ];
+    }
+
+    private function markClientOrderCancelledAfterRetentionDeletion(\Model_ClientOrder $order): void
+    {
+        $cancelStatus = '';
+        foreach (['STATUS_CANCELED', 'STATUS_CANCELLED'] as $constName) {
+            $fqcn = '\\Model_ClientOrder::' . $constName;
+            if (defined($fqcn)) {
+                $value = constant($fqcn);
+                if (is_string($value) && trim($value) !== '') {
+                    $cancelStatus = trim($value);
+                    break;
+                }
+            }
+        }
+
+        if ($cancelStatus === '') {
+            $current = strtolower(trim((string) ($order->status ?? '')));
+            $cancelStatus = $current === 'cancelled' ? 'cancelled' : 'canceled';
+        }
+
+        if (isset($order->status)) {
+            $order->status = $cancelStatus;
+        }
+        if (isset($order->updated_at)) {
+            $order->updated_at = date('Y-m-d H:i:s');
+        }
+        if (isset($order->canceled_at) && (string) ($order->canceled_at ?? '') === '') {
+            $order->canceled_at = date('Y-m-d H:i:s');
+        }
+        if (isset($order->expires_at)) {
+            $expiresAt = trim((string) ($order->expires_at ?? ''));
+            if ($expiresAt === '' || strtotime($expiresAt) === false) {
+                $order->expires_at = date('Y-m-d H:i:s');
+            }
+        }
+
+        $this->di['db']->store($order);
     }
 
     private function writeBillingStateToService($service, array $state): void
