@@ -3155,6 +3155,9 @@ class Service
             $this->di['db']->store($service);
         }
 
+        $expiresAtDisplay = $this->formatServerDateTimeForClientUi($expiresAt);
+        $displayTimezone = (string) date_default_timezone_get();
+
         return [
             'mode' => $mode,
             'hourly_rate' => $hourlyRate,
@@ -3175,7 +3178,25 @@ class Service
             'hold_since' => (string) ($state['hold_since'] ?? ''),
             'updated_at' => (string) ($state['updated_at'] ?? ''),
             'expires_at' => $expiresAt,
+            'expires_at_display' => $expiresAtDisplay,
+            'display_timezone' => $displayTimezone,
         ];
+    }
+
+    private function formatServerDateTimeForClientUi(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return '';
+        }
+
+        $ts = strtotime($raw);
+        if ($ts === false || $ts <= 0) {
+            return $raw;
+        }
+
+        // Match the core client-area date style (server-side rendered timezone).
+        return date('M j, Y, g:i A', $ts);
     }
 
     private function touchBillingAccountedAt($service): void

@@ -259,16 +259,19 @@ function renderHetznerBilling(data) {
   const remainingHours = Math.max(0, parseInt(String(billing.hours_balance || 0), 10) || 0);
   const purchasedHours = Math.max(0, parseInt(String(billing.hours_purchased_total || 0), 10) || 0);
   const expiresAt = String(billing.expires_at || '').trim();
+  const expiresAtDisplay = String(billing.expires_at_display || '').trim();
+  const displayTimezone = String(billing.display_timezone || '').trim();
   const hourlyRate = formatMoney(billing.hourly_rate || 0, billing.currency || '');
+  const expiresText = expiresAtDisplay || formatDateTime(expiresAt);
 
   summary.innerHTML = [
     '<div class="hetzner-prepaid-stat"><div class="hetzner-prepaid-stat-label">Remaining</div><div class="hetzner-prepaid-stat-value">' + esc(remainingHours) + 'h</div></div>',
-    '<div class="hetzner-prepaid-stat"><div class="hetzner-prepaid-stat-label">Expires</div><div class="hetzner-prepaid-stat-value">' + esc(formatDateTime(expiresAt)) + '</div></div>',
+    '<div class="hetzner-prepaid-stat"><div class="hetzner-prepaid-stat-label">Expires (server)</div><div class="hetzner-prepaid-stat-value">' + esc(expiresText) + '</div></div>',
     '<div class="hetzner-prepaid-stat"><div class="hetzner-prepaid-stat-label">Hourly Rate</div><div class="hetzner-prepaid-stat-value">' + esc(hourlyRate) + '</div></div>',
     '<div class="hetzner-prepaid-stat"><div class="hetzner-prepaid-stat-label">Purchased</div><div class="hetzner-prepaid-stat-value">' + esc(purchasedHours) + 'h</div></div>'
   ].join('');
 
-  meta.textContent = 'Prepaid rental time runs until expiration (including powered off time).';
+  meta.textContent = 'Prepaid rental time runs until expiration (including powered off time).' + (displayTimezone ? (' Times shown here use server timezone (' + displayTimezone + ') to match FossBilling.') : '');
 }
 
 function renderHetznerDetails(data) {
