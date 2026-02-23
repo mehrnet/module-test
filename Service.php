@@ -2195,17 +2195,76 @@ class Service
             return 0.0;
         }
 
+        // Prefer core client/balance service methods when available.
+        try {
+            $clientService = $this->di['mod_service']('Client');
+            if (is_object($clientService)) {
+                foreach (['getBalance', 'getClientBalance', 'balanceGet'] as $method) {
+                    if (!method_exists($clientService, $method)) {
+                        continue;
+                    }
+
+                    foreach ([[$client], [(int) ($client->id ?? 0)]] as $args) {
+                        try {
+                            $result = $clientService->{$method}(...$args);
+                        } catch (\Throwable $e) {
+                            continue;
+                        }
+
+                        if (is_numeric($result)) {
+                            return (float) $result;
+                        }
+                        if (is_array($result)) {
+                            foreach (['balance', 'credit', 'amount'] as $key) {
+                                if (isset($result[$key]) && is_numeric($result[$key])) {
+                                    return (float) $result[$key];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // Fall back to direct field reads below.
+        }
+
         foreach (['balance', 'credit', 'credit_balance'] as $field) {
             try {
-                if (isset($client->{$field}) || property_exists($client, $field)) {
-                    $value = $client->{$field};
-                    if (is_numeric($value)) {
-                        return (float) $value;
+                $value = $client->{$field};
+                if (is_numeric($value)) {
+                    return (float) $value;
+                }
+                if (is_string($value)) {
+                    $normalized = preg_replace('/[^0-9.\\-]/', '', $value);
+                    if ($normalized !== null && $normalized !== '' && is_numeric($normalized)) {
+                        return (float) $normalized;
                     }
                 }
             } catch (\Throwable $e) {
                 continue;
             }
+        }
+
+        // Last fallback: reload a raw bean by client id and inspect common fields.
+        try {
+            $clientId = (int) ($client->id ?? 0);
+            if ($clientId > 0) {
+                $bean = $this->di['db']->findOne('Client', 'id = :id', [':id' => $clientId]);
+                if (is_object($bean)) {
+                    foreach (['balance', 'credit', 'credit_balance'] as $field) {
+                        try {
+                            $value = $bean->{$field};
+                            if (is_numeric($value)) {
+                                return (float) $value;
+                            }
+                        } catch (\Throwable $e) {
+                            continue;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // Ignore and return zero.
         }
 
         return 0.0;
