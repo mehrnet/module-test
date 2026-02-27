@@ -319,6 +319,7 @@ class Service
         }
         $service->updated_at = date('Y-m-d H:i:s');
         $this->di['db']->store($service);
+        $this->markClientOrderSuspended($order);
 
         return true;
     }
@@ -345,6 +346,7 @@ class Service
         $this->clearPrepaidRetentionTimer($state);
         $this->writeBillingStateToService($service, $state);
         $this->di['db']->store($service);
+        $this->markClientOrderActive($order);
 
         return true;
     }
@@ -2425,6 +2427,7 @@ class Service
                     $service->status = 'active';
                     $service->updated_at = date('Y-m-d H:i:s');
                     $this->touchBillingAccountedAt($service);
+                    $this->markClientOrderActive($order);
                 } catch (\Throwable $e) {
                     // Keep top-up applied even if power action fails.
                 }
@@ -3058,6 +3061,49 @@ class Service
             }
         }
 
+        $this->di['db']->store($order);
+    }
+
+    private function markClientOrderSuspended(\Model_ClientOrder $order): void
+    {
+        $this->setClientOrderStatus($order, ['STATUS_SUSPENDED'], 'suspended');
+    }
+
+    private function markClientOrderActive(\Model_ClientOrder $order): void
+    {
+        $this->setClientOrderStatus($order, ['STATUS_ACTIVE'], 'active');
+    }
+
+    private function setClientOrderStatus(\Model_ClientOrder $order, array $constNames, string $fallback): void
+    {
+        $statusValue = '';
+        foreach ($constNames as $constName) {
+            $fqcn = '\\Model_ClientOrder::' . trim((string) $constName);
+            if (!defined($fqcn)) {
+                continue;
+            }
+            $value = constant($fqcn);
+            if (is_string($value) && trim($value) !== '') {
+                $statusValue = trim($value);
+                break;
+            }
+        }
+        if ($statusValue === '') {
+            $statusValue = trim($fallback);
+        }
+        if ($statusValue === '') {
+            return;
+        }
+
+        if (isset($order->status)) {
+            $order->status = $statusValue;
+        }
+        if (isset($order->updated_at)) {
+            $order->updated_at = date('Y-m-d H:i:s');
+        }
+        if ($statusValue === 'suspended' && isset($order->suspended_at) && (string) ($order->suspended_at ?? '') === '') {
+            $order->suspended_at = date('Y-m-d H:i:s');
+        }
         $this->di['db']->store($order);
     }
 
