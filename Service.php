@@ -1826,16 +1826,6 @@ class Service
             }
         }
 
-        try {
-            $retentionTick = $this->processPrepaidRetentionDeletionTick();
-            $deletedByRetention = max(0, (int) ($retentionTick['deleted'] ?? 0));
-            foreach ((array) ($retentionTick['errors'] ?? []) as $err) {
-                $errors[] = (string) $err;
-            }
-        } catch (\Throwable $e) {
-            $errors[] = 'Retention delete tick failed: ' . $e->getMessage();
-        }
-
         $services = $this->di['db']->find(
             'service_hetzner',
             'provision_status = :ps AND hcloud_server_id IS NOT NULL',
@@ -1864,15 +1854,34 @@ class Service
                     continue;
                 }
 
-                // Prepaid billing is wall-clock based (order expiration driven by FossBilling cron),
-                // so we do not consume/suspend manually here anymore.
-                if (($summary['mode'] ?? self::BILLING_MODE_STANDARD) === self::BILLING_MODE_PREPAID_HOURS) {
-                    $processed++;
-                    continue;
+                $expiryTs = $this->resolvePrepaidExpiryTimestamp($order, $summary);
+                if ($expiryTs > 0 && $expiryTs <= time()) {
+                    $status = strtolower(trim((string) ($service->status ?? '')));
+                    if (!in_array($status, ['suspended', 'cancelled', 'canceled'], true)) {
+                        try {
+                            $this->action_suspend($order);
+                            $suspended++;
+                            $service = $this->getServiceByOrder($order, false) ?: $service;
+                        } catch (\Throwable $e) {
+                            $errors[] = 'Suspend on expiry failed for service #' . ((int) ($service->id ?? 0)) . ': ' . $e->getMessage();
+                        }
+                    }
                 }
+
+                $processed++;
             } catch (\Throwable $e) {
                 $errors[] = 'Service #' . ((int) ($service->id ?? 0)) . ': ' . $e->getMessage();
             }
+        }
+
+        try {
+            $retentionTick = $this->processPrepaidRetentionDeletionTick();
+            $deletedByRetention = max(0, (int) ($retentionTick['deleted'] ?? 0));
+            foreach ((array) ($retentionTick['errors'] ?? []) as $err) {
+                $errors[] = (string) $err;
+            }
+        } catch (\Throwable $e) {
+            $errors[] = 'Retention delete tick failed: ' . $e->getMessage();
         }
 
         return [
@@ -1884,6 +1893,21 @@ class Service
             'errors' => $errors,
             'at' => date('c'),
         ];
+    }
+
+    private function resolvePrepaidExpiryTimestamp(\Model_ClientOrder $order, array $summary): int
+    {
+        $ts = $this->getPrepaidOrderExpiryTimestamp($order);
+        if ($ts > 0) {
+            return $ts;
+        }
+
+        $summaryTs = strtotime((string) ($summary['expires_at'] ?? ''));
+        if ($summaryTs !== false && $summaryTs > 0) {
+            return (int) $summaryTs;
+        }
+
+        return 0;
     }
 
     public function createTopupInvoice(\Model_ClientOrder $order, int $hours): array
